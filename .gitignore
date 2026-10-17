@@ -20,6 +20,10 @@ build/
 *~
 
 # DLLs (keep only source files)
+<<<<<<< HEAD
 !.deps/**/*.dll
 
 src/out
+=======
+!.deps/**/*.dll
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a

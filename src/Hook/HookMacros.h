@@ -55,8 +55,13 @@ do {                                                              \
     }                                                             \
 } while (0)
 
+<<<<<<< HEAD
 #define INSTALL_HOOK_C(name)            INSTALL_HOOK(client_hModule.load(std::memory_order_acquire), name)
 #define INSTALL_HOOK_U(name)            INSTALL_HOOK(ui_hModule.load(std::memory_order_acquire), name)
+=======
+#define INSTALL_HOOK_C(name)            INSTALL_HOOK(client_hModule, name)
+#define INSTALL_HOOK_U(name)            INSTALL_HOOK(ui_hModule, name)
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 
 // ── uninstall ───────────────────────────────────────────────────
 // Call between UNHOOK_BEGIN / UNHOOK_END.
@@ -92,5 +97,10 @@ do { \
     } \
 } while (0)
 
+<<<<<<< HEAD
 #define RESOLVE_C(name)       RESOLVE(client_hModule.load(std::memory_order_acquire), name)
 #define RESOLVE_U(name)       RESOLVE(ui_hModule.load(std::memory_order_acquire), name)
+=======
+#define RESOLVE_C(name)       RESOLVE(client_hModule, name)
+#define RESOLVE_U(name)       RESOLVE(ui_hModule, name)
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a

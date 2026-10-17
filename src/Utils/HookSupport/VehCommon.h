@@ -133,10 +133,17 @@ namespace VehCommon {
     } while (0)
 
 #define ARM_INT3_C(name, persistent_, onHit_, callbackData_)              \
+<<<<<<< HEAD
     ARM_INT3(client_hModule.load(std::memory_order_acquire), name, persistent_, onHit_, callbackData_)
 
 #define ARM_INT3_U(name, persistent_, onHit_, callbackData_)              \
     ARM_INT3(ui_hModule.load(std::memory_order_acquire), name, persistent_, onHit_, callbackData_)
+=======
+    ARM_INT3(client_hModule, name, persistent_, onHit_, callbackData_)
+
+#define ARM_INT3_U(name, persistent_, onHit_, callbackData_)              \
+    ARM_INT3(ui_hModule, name, persistent_, onHit_, callbackData_)
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 
 // ── CAPTURE_READY ────────────────────────────────────────────────────────────
 // True when both the captured `this` pointer and the resolved function pointer
@@ -167,5 +174,10 @@ namespace VehCommon {
         }                                                                 \
     } while (0)
 
+<<<<<<< HEAD
 #define ARM_CAPTURE_C(name) ARM_CAPTURE(client_hModule.load(std::memory_order_acquire), name)
 #define ARM_CAPTURE_U(name) ARM_CAPTURE(ui_hModule.load(std::memory_order_acquire), name)
+=======
+#define ARM_CAPTURE_C(name) ARM_CAPTURE(client_hModule, name)
+#define ARM_CAPTURE_U(name) ARM_CAPTURE(ui_hModule, name)
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a

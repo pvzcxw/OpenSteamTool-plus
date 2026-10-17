@@ -1,6 +1,9 @@
 #include "dllmain.h"
 #include "Hook/HookManager.h"
+<<<<<<< HEAD
 #include "Hook/Hooks_Diversion.h"
+=======
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 #include "Utils/Config/ConfigFileWatcher.h"
 #include "Utils/Config/LuaFileWatcher.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
@@ -8,6 +11,7 @@
 #include "Utils/SteamMetadata/PatternLoader.h"
 #include "Utils/SteamMetadata/SteamDiagnostics.h"
 #include "OSTPlatform/include/DynamicLibrary.h"
+<<<<<<< HEAD
 #include "OSTPlatform/include/Encoding.h"
 #include "OSTPlatform/include/Thread.h"
 
@@ -80,6 +84,38 @@ bool InitializeSteamComponents()
             return false;
         }
         ui_hModule.store(ui, std::memory_order_release);
+=======
+#include "OSTPlatform/include/Thread.h"
+
+#include <windows.h>
+
+// prepare key runtime paths.
+bool InitializeSteamComponents()
+{
+    const std::string steamInstallPath = OSTPlatform::DynamicLibrary::GetCurrentDirectoryPath();
+    if (steamInstallPath.empty()) {
+        return false;
+    }
+    sprintf_s(SteamInstallPath, kRuntimePathCapacity, "%s", steamInstallPath.c_str());
+    sprintf_s(SteamclientPath, kRuntimePathCapacity, "%s\\steamclient64.dll",  SteamInstallPath);
+    sprintf_s(SteamUIPath,     kRuntimePathCapacity, "%s\\steamui.dll",        SteamInstallPath);
+    sprintf_s(DiversionPath,   kRuntimePathCapacity, "%s\\bin\\diversion.dll", SteamInstallPath);
+    sprintf_s(LuaDir,          kRuntimePathCapacity, "%s\\config\\lua",        SteamInstallPath);
+    sprintf_s(ConfigPath,      kRuntimePathCapacity, "%s\\opensteamtool.toml", SteamInstallPath);
+    
+    client_hModule = OSTPlatform::DynamicLibrary::Load(SteamclientPath);
+    if (!client_hModule) {
+        LOG_ERROR("Load steamclient64.dll failed: {} (err={})",
+                  SteamclientPath, OSTPlatform::DynamicLibrary::GetLastErrorCode());
+        return false;
+    }
+    LOG_INFO("Loaded steamclient64.dll from {}", SteamclientPath);
+    
+    ui_hModule = OSTPlatform::DynamicLibrary::Load(SteamUIPath);
+    if(!ui_hModule) {
+        LOG_ERROR("Load failed for steamui.dll: err={}", OSTPlatform::DynamicLibrary::GetLastErrorCode());
+        return false;
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
     }
     return true;
 }
@@ -105,8 +141,13 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     // Each call computes the SHA-256 of the DLL on disk, checks the local
     // cache, and downloads from GitHub if needed.  Both calls are synchronous
     // but run on this worker thread, never under the loader lock.
+<<<<<<< HEAD
     PatternLoader::Load(ui_hModule.load(std::memory_order_acquire), SteamUIPath, "steamui");
     PatternLoader::Load(client_hModule.load(std::memory_order_acquire), SteamclientPath, "steamclient");
+=======
+    PatternLoader::Load(ui_hModule, SteamUIPath, "steamui");
+    PatternLoader::Load(client_hModule, SteamclientPath, "steamclient");
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 
     // IPC method metadata (funcHash, fencepost, argc, ...)
     IPCLoader::Load(SteamclientPath);
@@ -121,10 +162,13 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
 
     SteamUI::CoreHook();
     SteamClient::CoreHook();
+<<<<<<< HEAD
     g_HooksInstalled.store(true, std::memory_order_release);
     if (Hooks_Diversion::g_hClientHooksReadyEvent) {
         ::SetEvent(Hooks_Diversion::g_hClientHooksReadyEvent);
     }
+=======
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 
     // Surface any functions that FindPattern() could not locate.
     PatternLoader::ReportMissingFunctions();
@@ -142,6 +186,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
     if (dwReason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(hModule);
+<<<<<<< HEAD
         auto selfModule = reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(hModule);
 
         // The paths and shadow client must be ready before Steam's first
@@ -162,10 +207,17 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
 
         OSTPlatform::Thread::StartDetached([selfModule] {
             return InitThread(selfModule);
+=======
+        // Hand off all real work to a worker thread to avoid running file I/O,
+        // module loading and detour transactions under the loader lock.
+        OSTPlatform::Thread::StartDetached([module = reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(hModule)] {
+            return InitThread(module);
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
         });
     }
     else if (dwReason == DLL_PROCESS_DETACH)
     {
+<<<<<<< HEAD
         g_HooksInstalled.store(false, std::memory_order_release);
         if (Hooks_Diversion::g_hClientHooksReadyEvent) {
             ::ResetEvent(Hooks_Diversion::g_hClientHooksReadyEvent);
@@ -173,6 +225,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
         if (pvReserved == nullptr) {
             Hooks_Diversion::Uninstall();
         }
+=======
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
         ConfigFileWatcher::Stop();
         LuaFileWatcher::Stop();
         SteamUI::CoreUnhook();

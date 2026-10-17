@@ -8,9 +8,12 @@
 #include "Enums.h"
 
 
+<<<<<<< HEAD
 #include <atomic>
 #include <cstddef>
 #include <cstring>
+=======
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 #include <string>
 #include <format>
 #include <ostream>
@@ -209,6 +212,7 @@ struct IKeyValuesSystem {
 };
 using KeyValuesSystemSteam_t = IKeyValuesSystem* (*)();
 
+<<<<<<< HEAD
 namespace NetPacketLayout {
 	inline std::atomic<uint32> s_dataOffset{8};
 	inline std::atomic<uint32> s_sizeOffset{16};
@@ -255,6 +259,16 @@ struct CNetPacket
 	void SetCubData(uint32 value) noexcept {
 		SetCubData(value, NetPacketLayout::s_sizeOffset.load(std::memory_order_relaxed));
 	}
+=======
+struct CNetPacket
+{
+	HCONNECTION m_hConnection;
+	uint8* m_pubData;
+	uint32 m_cubData;
+	int32 m_cRef;
+	uint8* m_pubNetworkBuffer;
+	CNetPacket* m_pNext;
+>>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 };
 
 struct MsgHdr
