@@ -8,13 +8,15 @@
 #include <type_traits>
 #include <vector>
 
-namespace VehCommon {
+namespace VehCommon
+{
 
     // ── x86-64 instruction length cap ────────────────────────────────────────
     constexpr uint64_t kMaxX64InsnLen = 15;
 
     // ── RIP comparisons ──────────────────────────────────────────────────────
-    inline bool IsAt(uint64_t rip, const void* target) {
+    inline bool IsAt(uint64_t rip, const void *target)
+    {
         return rip == reinterpret_cast<uint64_t>(target);
     }
 
@@ -22,7 +24,8 @@ namespace VehCommon {
     // instruction past `target`. Used by the SINGLE_STEP branch to recognize
     // that the trap was caused by us setting TF after restoring `target`'s
     // first byte. Independent of the prologue's actual instruction length.
-    inline bool IsPostInt3Step(uint64_t rip, const void* target) {
+    inline bool IsPostInt3Step(uint64_t rip, const void *target)
+    {
         auto base = reinterpret_cast<uint64_t>(target);
         return rip > base && rip <= base + kMaxX64InsnLen;
     }
@@ -33,14 +36,18 @@ namespace VehCommon {
     // (return address at RSP+0, shadow space at +8..+0x20, arg5 at +0x28).
     // Only valid before RSP moves -- i.e. on an int3 hit at the first
     // instruction of the function.
-    template<typename T>
-    inline T GetArg(OSTPlatform::Trap::Context& ctx, int index) {
+    template <typename T>
+    inline T GetArg(OSTPlatform::Trap::Context &ctx, int index)
+    {
         static_assert(sizeof(T) <= sizeof(uint64_t),
                       "GetArg<T>: T must fit in a 64-bit register slot");
         uint64_t raw = ctx.Argument(index);
-        if constexpr (std::is_pointer_v<T>) {
+        if constexpr (std::is_pointer_v<T>)
+        {
             return reinterpret_cast<T>(raw);
-        } else {
+        }
+        else
+        {
             return static_cast<T>(raw);
         }
     }
@@ -59,13 +66,14 @@ namespace VehCommon {
     // onHit fires after the byte is restored but before control returns to the
     // original code. It may read/mutate the CPU context (ctx) freely and inspect
     // the site metadata for logging or site-specific callback data.
-    struct Int3Site {
-        uint8_t*    target;        // first byte of the hooked function
-        uint8_t     originalByte;  // saved before arming
-        bool        persistent;
-        void      (*onHit)(OSTPlatform::Trap::Context& ctx, const Int3Site& site);
-        void*       callbackData;  // site-specific data consumed by onHit
-        const char* label;         // logging tag
+    struct Int3Site
+    {
+        uint8_t *target;      // first byte of the hooked function
+        uint8_t originalByte; // saved before arming
+        bool persistent;
+        void (*onHit)(OSTPlatform::Trap::Context &ctx, const Int3Site &site);
+        void *callbackData; // site-specific data consumed by onHit
+        const char *label;  // logging tag
     };
 
     // Append a site to the registry and write 0xCC to its first byte.
@@ -80,8 +88,8 @@ namespace VehCommon {
     //     handled (caller should return EXCEPTION_CONTINUE_EXECUTION)
     //   - returns false if nothing matched (caller should fall through to
     //     EXCEPTION_CONTINUE_SEARCH)
-    bool OnBreakpoint(OSTPlatform::Trap::Context& ctx);
-    bool OnSingleStep(OSTPlatform::Trap::Context& ctx);
+    bool OnBreakpoint(OSTPlatform::Trap::Context &ctx);
+    bool OnSingleStep(OSTPlatform::Trap::Context &ctx);
 
     // Restore any still-armed bytes and clear the registry. Call during global
     // hook shutdown before removing the VEH handler.
@@ -93,9 +101,10 @@ namespace VehCommon {
     // Convenience onHit for the "capture this" pattern.
     // callbackData must point to a `void*` slot that will receive RCX (the
     // implicit `this` argument in the Windows x64 fastcall convention).
-    inline void CaptureRcxTo(OSTPlatform::Trap::Context& ctx, const Int3Site& site) {
-        *static_cast<void**>(site.callbackData) = GetArg<void*>(ctx, 1);
-        LOG_MISC_DEBUG("CaptureRcxTo {}: captured {}", site.label, GetArg<void*>(ctx, 1));
+    inline void CaptureRcxTo(OSTPlatform::Trap::Context &ctx, const Int3Site &site)
+    {
+        *static_cast<void **>(site.callbackData) = GetArg<void *>(ctx, 1);
+        LOG_MISC_DEBUG("CaptureRcxTo {}: captured {}", site.label, GetArg<void *>(ctx, 1));
     }
 }
 
@@ -110,11 +119,11 @@ namespace VehCommon {
 //
 // The trailing `_capture_out_*` slot lets ARM_CAPTURE_C(name) pick up the
 // outVar binding without the caller having to repeat it.
-#define CAPTURE_THIS_FUNC(name, ret, outVar, ...)          \
-    using name##_t = ret(__fastcall*)(__VA_ARGS__);        \
-    inline name##_t o##name = nullptr;                     \
-    inline void* outVar = nullptr;                         \
-    inline void** const _capture_out_##name = &outVar
+#define CAPTURE_THIS_FUNC(name, ret, outVar, ...)    \
+    using name##_t = ret(__fastcall *)(__VA_ARGS__); \
+    inline name##_t o##name = nullptr;               \
+    inline void *outVar = nullptr;                   \
+    inline void **const _capture_out_##name = &outVar
 
 // ── ARM_INT3 ─────────────────────────────────────────────────────────────────
 // Generic int3 site registration: resolve `name` in `module`, save its first
@@ -122,28 +131,28 @@ namespace VehCommon {
 // Use this when you need full control (e.g. persistent intercepts whose
 // callback mutates args). For the common "capture this" pattern see
 // ARM_CAPTURE_C below.
-#define ARM_INT3(module, name, persistent_, onHit_, callbackData_)        \
-    do {                                                                  \
-        if (auto* _p_ = PatternLoader::FindPattern(module, #name)) {       \
-            auto* _t_ = static_cast<uint8_t*>(_p_);                       \
-            VehCommon::Arm(VehCommon::Int3Site{                           \
-                _t_, *_t_, persistent_, onHit_, callbackData_, #name,     \
-            });                                                           \
-        }                                                                 \
+#define ARM_INT3(module, name, persistent_, onHit_, callbackData_) \
+    do                                                             \
+    {                                                              \
+        if (auto *_p_ = PatternLoader::FindPattern(module, #name)) \
+        {                                                          \
+            auto *_t_ = static_cast<uint8_t *>(_p_);               \
+            VehCommon::Arm(VehCommon::Int3Site{                    \
+                _t_,                                               \
+                *_t_,                                              \
+                persistent_,                                       \
+                onHit_,                                            \
+                callbackData_,                                     \
+                #name,                                             \
+            });                                                    \
+        }                                                          \
     } while (0)
 
-#define ARM_INT3_C(name, persistent_, onHit_, callbackData_)              \
-<<<<<<< HEAD
+#define ARM_INT3_C(name, persistent_, onHit_, callbackData_) \
     ARM_INT3(client_hModule.load(std::memory_order_acquire), name, persistent_, onHit_, callbackData_)
 
-#define ARM_INT3_U(name, persistent_, onHit_, callbackData_)              \
+#define ARM_INT3_U(name, persistent_, onHit_, callbackData_) \
     ARM_INT3(ui_hModule.load(std::memory_order_acquire), name, persistent_, onHit_, callbackData_)
-=======
-    ARM_INT3(client_hModule, name, persistent_, onHit_, callbackData_)
-
-#define ARM_INT3_U(name, persistent_, onHit_, callbackData_)              \
-    ARM_INT3(ui_hModule, name, persistent_, onHit_, callbackData_)
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 
 // ── CAPTURE_READY ────────────────────────────────────────────────────────────
 // True when both the captured `this` pointer and the resolved function pointer
@@ -160,24 +169,23 @@ namespace VehCommon {
 // registers a one-shot Int3Site that writes RCX into the outVar bound by
 // CAPTURE_THIS_FUNC (via `_capture_out_##name`), and stashes the resolved
 // address into `o##name` so callers can invoke the original after capture.
-#define ARM_CAPTURE(module,name)                                          \
-    do {                                                                  \
-        if (auto* _p_ = PatternLoader::FindPattern(module, #name)) {       \
-            o##name = reinterpret_cast<name##_t>(_p_);                    \
-            auto* _t_ = static_cast<uint8_t*>(_p_);                       \
-            VehCommon::Arm(VehCommon::Int3Site{                           \
-                _t_, *_t_, /*persistent=*/false,                          \
-                &VehCommon::CaptureRcxTo,                                 \
-                static_cast<void*>(_capture_out_##name),                  \
-                #name,                                                    \
-            });                                                           \
-        }                                                                 \
+#define ARM_CAPTURE(module, name)                                  \
+    do                                                             \
+    {                                                              \
+        if (auto *_p_ = PatternLoader::FindPattern(module, #name)) \
+        {                                                          \
+            o##name = reinterpret_cast<name##_t>(_p_);             \
+            auto *_t_ = static_cast<uint8_t *>(_p_);               \
+            VehCommon::Arm(VehCommon::Int3Site{                    \
+                _t_,                                               \
+                *_t_,                                              \
+                /*persistent=*/false,                              \
+                &VehCommon::CaptureRcxTo,                          \
+                static_cast<void *>(_capture_out_##name),          \
+                #name,                                             \
+            });                                                    \
+        }                                                          \
     } while (0)
 
-<<<<<<< HEAD
 #define ARM_CAPTURE_C(name) ARM_CAPTURE(client_hModule.load(std::memory_order_acquire), name)
 #define ARM_CAPTURE_U(name) ARM_CAPTURE(ui_hModule.load(std::memory_order_acquire), name)
-=======
-#define ARM_CAPTURE_C(name) ARM_CAPTURE(client_hModule, name)
-#define ARM_CAPTURE_U(name) ARM_CAPTURE(ui_hModule, name)
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a

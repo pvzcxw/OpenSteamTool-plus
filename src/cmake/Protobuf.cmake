@@ -21,20 +21,12 @@ set(protobuf_BUILD_PROTOC_BINARIES ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     protobuf
-<<<<<<< HEAD
     URL
         https://mirror.bazel.build/github.com/protocolbuffers/protobuf/archive/v3.15.3.zip
         https://github.com/protocolbuffers/protobuf/archive/v3.15.3.zip
     URL_HASH      SHA256=1c11b325e9fbb655895e8fe9843479337d50dd0be56a41737cbb9aede5e9ffa0
     TLS_VERIFY    OFF
     SOURCE_SUBDIR cmake
-=======
-    GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
-    GIT_TAG        v3.15.3
-    GIT_SHALLOW    TRUE
-    GIT_PROGRESS   TRUE
-    SOURCE_SUBDIR  cmake
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 )
 
 set(_saved_CMAKE_WARN_DEPRECATED ${CMAKE_WARN_DEPRECATED})

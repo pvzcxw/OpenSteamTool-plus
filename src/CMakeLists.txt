@@ -177,10 +177,7 @@ target_compile_definitions(OpenSteamTool PRIVATE
 # ---------------------------------------------------------------------------
 add_library(dwmapi SHARED
     dwmapi/dwmapi.cpp
-<<<<<<< HEAD
     dwmapi/dwmapi.def
-=======
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 )
 
 # ---------------------------------------------------------------------------

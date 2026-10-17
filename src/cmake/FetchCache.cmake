@@ -29,7 +29,6 @@ if(NOT DEFINED OST_DEPS_DIR)
         "${CMAKE_CURRENT_LIST_DIR}/../../.deps" ABSOLUTE)
 endif()
 
-<<<<<<< HEAD
 # Reuse a cached source tree only when its expected project files are present.
 # Interrupted FetchContent operations can leave empty <name>-src directories;
 # treating those as valid caches suppresses population and later causes errors
@@ -50,20 +49,10 @@ foreach(_dep IN ITEMS lua detours spdlog protobuf tomlplusplus)
     endif()
 
     if(IS_DIRECTORY "${_src}" AND EXISTS "${_src}/${_marker}")
-=======
-# For each known dependency, if a source dir is already cached at the shared
-# location, point FetchContent at it so populate becomes a no-op.
-set(_OST_ALL_CACHED TRUE)
-foreach(_dep IN ITEMS lua detours spdlog protobuf tomlplusplus)
-    string(TOUPPER "${_dep}" _UPPER)
-    set(_src "${OST_DEPS_DIR}/${_dep}-src")
-    if(IS_DIRECTORY "${_src}")
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
         set(FETCHCONTENT_SOURCE_DIR_${_UPPER} "${_src}" CACHE PATH
             "Pre-populated ${_dep} source dir" FORCE)
     else()
         set(_OST_ALL_CACHED FALSE)
-<<<<<<< HEAD
         if(IS_DIRECTORY "${_src}")
             set(_OST_HAS_INCOMPLETE_CACHE TRUE)
             # Clear a stale override pointing at this incomplete shared source.
@@ -76,22 +65,17 @@ foreach(_dep IN ITEMS lua detours spdlog protobuf tomlplusplus)
             endif()
             message(STATUS "FetchContent: ignoring incomplete ${_dep} cache at ${_src}")
         endif()
-=======
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
     endif()
 endforeach()
 
 if(_OST_ALL_CACHED)
     message(STATUS "FetchContent: reusing cached sources at ${OST_DEPS_DIR}")
-<<<<<<< HEAD
 elseif(_OST_HAS_INCOMPLETE_CACHE)
     # Avoid cloning into a leftover partial source directory. Use this build
     # tree's FetchContent cache for a clean retry instead.
     set(FETCHCONTENT_BASE_DIR "${CMAKE_BINARY_DIR}/_deps" CACHE PATH
         "FetchContent cache for recovering incomplete shared sources" FORCE)
     message(STATUS "FetchContent: recovering incomplete sources in ${FETCHCONTENT_BASE_DIR}")
-=======
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 else()
     # At least one dep still needs to be downloaded. Direct the populate
     # output to the shared cache so the next configure can reuse it.

@@ -7,41 +7,44 @@
 #include "Types.h"
 #include "Enums.h"
 
-
-<<<<<<< HEAD
 #include <atomic>
 #include <cstddef>
 #include <cstring>
-=======
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 #include <string>
 #include <format>
 #include <ostream>
 
-template<typename T>
-struct CUtlMemory{
-	T* m_pMemory;
+template <typename T>
+struct CUtlMemory
+{
+	T *m_pMemory;
 	uint32 m_nAllocationCount;
 	uint32 m_nGrowSize;
 };
 
-template<typename T>
-struct CUtlVector {
+template <typename T>
+struct CUtlVector
+{
 	CUtlMemory<T> m_Memory;
 	uint32 m_Size;
 
 	// Swap with last element and shrink. Does not preserve order.
-	void FastRemove(uint32 elem) {
-		if (elem < m_Size) {
+	void FastRemove(uint32 elem)
+	{
+		if (elem < m_Size)
+		{
 			if (elem != m_Size - 1)
 				m_Memory.m_pMemory[elem] = m_Memory.m_pMemory[m_Size - 1];
 			--m_Size;
 		}
 	}
 
-	bool FindAndFastRemove(const T& src) {
-		for (uint32 i = 0; i < m_Size; ++i) {
-			if (m_Memory.m_pMemory[i] == src) {
+	bool FindAndFastRemove(const T &src)
+	{
+		for (uint32 i = 0; i < m_Size; ++i)
+		{
+			if (m_Memory.m_pMemory[i] == src)
+			{
 				FastRemove(i);
 				return true;
 			}
@@ -50,34 +53,36 @@ struct CUtlVector {
 	}
 };
 
-struct CUtlBuffer{
+struct CUtlBuffer
+{
 	CUtlMemory<uint8> m_Memory;
 	int32 m_Get;
 	int32 m_Put;
 	int32 m_nOffset;
 	int32 m_flags;
 
-	typedef bool (CUtlBuffer::*UtlBufferOverflowFunc_t)( int32 nSize );
+	typedef bool (CUtlBuffer::*UtlBufferOverflowFunc_t)(int32 nSize);
 	UtlBufferOverflowFunc_t m_GetOverflowFunc;
 	UtlBufferOverflowFunc_t m_PutOverflowFunc;
 
 	// Direct base/size helpers — match the names the original Valve
 	// CUtlBuffer exposes so call sites read naturally.
-	uint8* Base()             { return m_Memory.m_pMemory; }
-	const uint8* Base() const { return m_Memory.m_pMemory; }
-	int32 TellPut() const     { return m_Put; }
-	int32 TellGet() const     { return m_Get; }
+	uint8 *Base() { return m_Memory.m_pMemory; }
+	const uint8 *Base() const { return m_Memory.m_pMemory; }
+	int32 TellPut() const { return m_Put; }
+	int32 TellGet() const { return m_Get; }
 
-	uint32 Size() const        { return m_Memory.m_nAllocationCount; }
-	uint32 Capacity() const    { return m_Memory.m_nAllocationCount; }
+	uint32 Size() const { return m_Memory.m_nAllocationCount; }
+	uint32 Capacity() const { return m_Memory.m_nAllocationCount; }
 
 	// Debug helper
-	std::string DebugString() const{
-      return std::format("m_Memory:0x{:X} m_AllocCnt:{} m_Grow:{} m_Get:{} m_Put:{} m_nOffset:{} m_flags:{}",
-          reinterpret_cast<uintptr_t>(m_Memory.m_pMemory),
-          m_Memory.m_nAllocationCount, m_Memory.m_nGrowSize,
-          m_Get, m_Put, m_nOffset, m_flags);
-  }
+	std::string DebugString() const
+	{
+		return std::format("m_Memory:0x{:X} m_AllocCnt:{} m_Grow:{} m_Get:{} m_Put:{} m_nOffset:{} m_flags:{}",
+						   reinterpret_cast<uintptr_t>(m_Memory.m_pMemory),
+						   m_Memory.m_nAllocationCount, m_Memory.m_nGrowSize,
+						   m_Get, m_Put, m_nOffset, m_flags);
+	}
 };
 
 struct PackageInfo
@@ -89,8 +94,8 @@ struct PackageInfo
 	ELicenseType LicenseType;
 	EPackageStatus Status;
 	byte SHA_1_Hash[20];
-	void* pPackageInfoNodeBegin;
-	void* pExtendNodeBegin;
+	void *pPackageInfoNodeBegin;
+	void *pExtendNodeBegin;
 
 	CUtlVector<AppId_t> AppIdVec;
 	CUtlVector<AppId_t> DepotIdVec;
@@ -99,11 +104,11 @@ struct PackageInfo
 struct AppOwnership
 {
 	PackageId_t PackageId;
-	EAppReleaseState ReleaseState; 
-	AccountID_t SteamId32; 
-	AppId_t MasterSubscriptionAppID; 
-	uint32 TrialSeconds; 
-	uint32 ExistInPackageNums; 
+	EAppReleaseState ReleaseState;
+	AccountID_t SteamId32;
+	AppId_t MasterSubscriptionAppID;
+	uint32 TrialSeconds;
+	uint32 ExistInPackageNums;
 	char PurchaseCountryCode[4];
 	uint32 TimeStamp;
 	uint32 TimeExpire;
@@ -130,34 +135,34 @@ struct AppOwnership
 // Single depot manifest entry (0x20 bytes) produced by BuildDepotDependency.
 struct DepotEntry
 {
-	uint32  DepotId;        // 0x00
-	uint32  AppId;          // 0x04
-	uint64  ManifestGid;    // 0x08 — from depots/<id>/manifests/<branch>/gid
-	uint64  ManifestSize;   // 0x10 — from depots/<id>/manifests/<branch>/size
-	uint32  DlcAppId;       // 0x18 — associated DLC AppID, 0 if none
-	uint8   LcsRequired;    // 0x1C — branches/<branch>/lcsrequired
-	uint8   bNotNewTarget;  // 0x1D — carried over from active list (not newly activated this call)
-	uint8   SharedInstall;  // 0x1E — sharedinstall / depotfromapp redirect
-	uint8   Padding;        // 0x1F
+	uint32 DepotId;		 // 0x00
+	uint32 AppId;		 // 0x04
+	uint64 ManifestGid;	 // 0x08 — from depots/<id>/manifests/<branch>/gid
+	uint64 ManifestSize; // 0x10 — from depots/<id>/manifests/<branch>/size
+	uint32 DlcAppId;	 // 0x18 — associated DLC AppID, 0 if none
+	uint8 LcsRequired;	 // 0x1C — branches/<branch>/lcsrequired
+	uint8 bNotNewTarget; // 0x1D — carried over from active list (not newly activated this call)
+	uint8 SharedInstall; // 0x1E — sharedinstall / depotfromapp redirect
+	uint8 Padding;		 // 0x1F
 };
 static_assert(sizeof(DepotEntry) == 0x20, "DepotEntry must be 32 bytes");
 
 struct KeyValues
 {
-	union                                   // +0x00 (8B) — value storage OR first child
+	union // +0x00 (8B) — value storage OR first child
 	{
-		KeyValues*      m_pSub;             // TYPE_NONE  → pointer to first child
-		char*           m_sValue;           // TYPE_STRING
-		wchar_t*        m_wsValue;          // TYPE_WSTRING
-		int             m_iValue;           // TYPE_INT
-		float           m_flValue;          // TYPE_FLOAT
-		void*           m_pValue;           // TYPE_PTR
-		uint64			m_ullValue;         // TYPE_UINT64
-		int64           m_llValue;          // TYPE_INT64
-		byte   			m_Color[8];         // TYPE_COLOR
+		KeyValues *m_pSub;	// TYPE_NONE  → pointer to first child
+		char *m_sValue;		// TYPE_STRING
+		wchar_t *m_wsValue; // TYPE_WSTRING
+		int m_iValue;		// TYPE_INT
+		float m_flValue;	// TYPE_FLOAT
+		void *m_pValue;		// TYPE_PTR
+		uint64 m_ullValue;	// TYPE_UINT64
+		int64 m_llValue;	// TYPE_INT64
+		byte m_Color[8];	// TYPE_COLOR
 	};
 
-	KeyValues*          m_pChain;           // +0x08 (8B) — chained KeyValues for fallback lookup
+	KeyValues *m_pChain; // +0x08 (8B) — chained KeyValues for fallback lookup
 
 	// +0x10 (4B) — packed bitfield
 	//   bit[0:24]  m_iKeyName              (25 bits)  key symbol assigned by KeyValuesSystem
@@ -169,19 +174,18 @@ struct KeyValues
 	{
 		struct
 		{
-			unsigned int m_iKeyName              : 25;
-			unsigned int m_iDataType             : 4;
-			unsigned int m_bHasEscapeSequences   : 1;
+			unsigned int m_iKeyName : 25;
+			unsigned int m_iDataType : 4;
+			unsigned int m_bHasEscapeSequences : 1;
 			unsigned int m_bEvaluateConditionals : 1;
-			unsigned int m_bAllocatedValue       : 1;
+			unsigned int m_bAllocatedValue : 1;
 		};
-		unsigned int m_iPackedKeyAndType;    // raw DWORD access
+		unsigned int m_iPackedKeyAndType; // raw DWORD access
 	};
 
-	unsigned int        m_unFlags;          // +0x14 (4B) — additional flags
+	unsigned int m_unFlags; // +0x14 (4B) — additional flags
 
-	KeyValues*          m_pPeer;            // +0x18 (8B) — next sibling in linked list
-
+	KeyValues *m_pPeer; // +0x18 (8B) — next sibling in linked list
 };
 static_assert(sizeof(KeyValues) == 0x20, "KeyValues must be 32 bytes");
 
@@ -189,36 +193,38 @@ static_assert(sizeof(KeyValues) == 0x20, "KeyValues must be 32 bytes");
 // IKeyValuesSystem
 //   Exported as "KeyValuesSystemSteam" (ord 103) from vstdlib_s64.dll
 // ============================================================
-struct IKeyValuesSystem {
+struct IKeyValuesSystem
+{
 	// vtable[0] (+0x00) — records max KeyValues size for memory pooling
-	virtual void        RegisterSizeofKeyValues(int size) = 0;
+	virtual void RegisterSizeofKeyValues(int size) = 0;
 
 	// vtable[1] (+0x08) — hash string → return symbol (create if not found)
 	//   Symbol = (pool_index << 15) | byte_offset_within_pool
 	//   Returns 0 if name is null/empty and bCreate=false
-	virtual int         GetSymbolForString(const char* name, bool bCreate) = 0;
+	virtual int GetSymbolForString(const char *name, bool bCreate) = 0;
 
 	// vtable[2] (+0x10) — O(1) reverse lookup: symbol → string pointer
 	//   Returns "" (empty string) for invalid/zero symbols
-	virtual const char* GetStringForSymbol(int symbol) = 0;
+	virtual const char *GetStringForSymbol(int symbol) = 0;
 
 	// vtable[3..11] — Alloc/Free memory, leak tracking, file cache, etc.
 	//   (not needed for depot override, omitted)
 
 	// ── helpers ──
-	int  GetSymbol(const char* name)        { return GetSymbolForString(name, false); }
-	int  GetOrCreateSymbol(const char* name) { return GetSymbolForString(name, true); }
-	const char* GetKeyName(int symbol)       { return GetStringForSymbol(symbol); }
+	int GetSymbol(const char *name) { return GetSymbolForString(name, false); }
+	int GetOrCreateSymbol(const char *name) { return GetSymbolForString(name, true); }
+	const char *GetKeyName(int symbol) { return GetStringForSymbol(symbol); }
 };
-using KeyValuesSystemSteam_t = IKeyValuesSystem* (*)();
+using KeyValuesSystemSteam_t = IKeyValuesSystem *(*)();
 
-<<<<<<< HEAD
-namespace NetPacketLayout {
+namespace NetPacketLayout
+{
 	inline std::atomic<uint32> s_dataOffset{8};
 	inline std::atomic<uint32> s_sizeOffset{16};
 	inline std::atomic<bool> s_resolved{false};
 
-	inline void Reset() noexcept {
+	inline void Reset() noexcept
+	{
 		s_dataOffset.store(8, std::memory_order_relaxed);
 		s_sizeOffset.store(16, std::memory_order_relaxed);
 		s_resolved.store(false, std::memory_order_release);
@@ -231,56 +237,54 @@ struct CNetPacket
 {
 	std::byte m_storage[56];
 
-	[[nodiscard]] uint8* PubData(uint32 offset) const noexcept {
-		uint8* value = nullptr;
-		std::memcpy(&value, reinterpret_cast<const uint8*>(this) + offset, sizeof(value));
+	[[nodiscard]] uint8 *PubData(uint32 offset) const noexcept
+	{
+		uint8 *value = nullptr;
+		std::memcpy(&value, reinterpret_cast<const uint8 *>(this) + offset, sizeof(value));
 		return value;
 	}
-	void SetPubData(uint8* value, uint32 offset) noexcept {
-		std::memcpy(reinterpret_cast<uint8*>(this) + offset, &value, sizeof(value));
+	void SetPubData(uint8 *value, uint32 offset) noexcept
+	{
+		std::memcpy(reinterpret_cast<uint8 *>(this) + offset, &value, sizeof(value));
 	}
-	[[nodiscard]] uint32 CubData(uint32 offset) const noexcept {
+	[[nodiscard]] uint32 CubData(uint32 offset) const noexcept
+	{
 		uint32 value = 0;
-		std::memcpy(&value, reinterpret_cast<const uint8*>(this) + offset, sizeof(value));
+		std::memcpy(&value, reinterpret_cast<const uint8 *>(this) + offset, sizeof(value));
 		return value;
 	}
-	void SetCubData(uint32 value, uint32 offset) noexcept {
-		std::memcpy(reinterpret_cast<uint8*>(this) + offset, &value, sizeof(value));
+	void SetCubData(uint32 value, uint32 offset) noexcept
+	{
+		std::memcpy(reinterpret_cast<uint8 *>(this) + offset, &value, sizeof(value));
 	}
-	[[nodiscard]] uint8* PubData() const noexcept {
+	[[nodiscard]] uint8 *PubData() const noexcept
+	{
 		return PubData(NetPacketLayout::s_dataOffset.load(std::memory_order_relaxed));
 	}
-	void SetPubData(uint8* value) noexcept {
+	void SetPubData(uint8 *value) noexcept
+	{
 		SetPubData(value, NetPacketLayout::s_dataOffset.load(std::memory_order_relaxed));
 	}
-	[[nodiscard]] uint32 CubData() const noexcept {
+	[[nodiscard]] uint32 CubData() const noexcept
+	{
 		return CubData(NetPacketLayout::s_sizeOffset.load(std::memory_order_relaxed));
 	}
-	void SetCubData(uint32 value) noexcept {
+	void SetCubData(uint32 value) noexcept
+	{
 		SetCubData(value, NetPacketLayout::s_sizeOffset.load(std::memory_order_relaxed));
 	}
-=======
-struct CNetPacket
-{
-	HCONNECTION m_hConnection;
-	uint8* m_pubData;
-	uint32 m_cubData;
-	int32 m_cRef;
-	uint8* m_pubNetworkBuffer;
-	CNetPacket* m_pNext;
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
 };
 
 struct MsgHdr
 {
-	EMsg eMsg;               // actual_eMsg | 0x80000000
+	EMsg eMsg; // actual_eMsg | 0x80000000
 	uint32 headerLength;
 };
 
 // High bit of eMsg discriminates protobuf vs extended header.
 constexpr uint32 kMsgHdrProtoFlag = 0x80000000;
 
-#pragma pack(push,1)
+#pragma pack(push, 1)
 struct ExtendedMsgHdr
 {
 	EMsg eMsg;
@@ -295,44 +299,47 @@ struct ExtendedMsgHdr
 #pragma pack(pop)
 
 // ── CPipeClient ────────────────────────────────────────────
-struct CPipeClient {
-    void*    m_pServer;         // +0
-    void*    m_pClient;         // +8
-    HSteamPipe  m_hSteamPipe;      // +16
-    uint8    _pad0[12];         // +20
-    PID_t    m_clientPID;       // +32
-    uint8    _pad1[4];          // +36
-    char*    m_szProcessName;   // +40
-    uint8    _pad2[80];         // +48
-    int32    m_nActiveRefs;     // +128
-    uint8    _pad3[188];        // +132
-    void*    m_pLocalIPCServer; // +320
-    bool     m_bInProcess;      // +328
-    uint8    _pad4[31];         // +329
+struct CPipeClient
+{
+	void *m_pServer;		 // +0
+	void *m_pClient;		 // +8
+	HSteamPipe m_hSteamPipe; // +16
+	uint8 _pad0[12];		 // +20
+	PID_t m_clientPID;		 // +32
+	uint8 _pad1[4];			 // +36
+	char *m_szProcessName;	 // +40
+	uint8 _pad2[80];		 // +48
+	int32 m_nActiveRefs;	 // +128
+	uint8 _pad3[188];		 // +132
+	void *m_pLocalIPCServer; // +320
+	bool m_bInProcess;		 // +328
+	uint8 _pad4[31];		 // +329
 
-	std::string DebugString() const {
+	std::string DebugString() const
+	{
 		return std::format("pipe=0x{:08X} pid={} proc={} ",
-			m_hSteamPipe, m_clientPID, m_szProcessName ? m_szProcessName : "?");
+						   m_hSteamPipe, m_clientPID, m_szProcessName ? m_szProcessName : "?");
 	}
 };
 
-struct CGameID{
+struct CGameID
+{
 	enum EGameIDType
 	{
-		k_EGameIDTypeApp		= 0,
-		k_EGameIDTypeGameMod	= 1,
-		k_EGameIDTypeShortcut	= 2,
-		k_EGameIDTypeP2P		= 3,
+		k_EGameIDTypeApp = 0,
+		k_EGameIDTypeGameMod = 1,
+		k_EGameIDTypeShortcut = 2,
+		k_EGameIDTypeP2P = 3,
 	};
 
 	bool IsSteamApp() const
 	{
-		return ( m_gameID.m_nType == k_EGameIDTypeApp );
+		return (m_gameID.m_nType == k_EGameIDTypeApp);
 	}
 
 	AppId_t AppID(bool checkType = false) const
 	{
-		if(checkType && !IsSteamApp())
+		if (checkType && !IsSteamApp())
 			return 0;
 		return m_gameID.m_nAppID;
 	}
@@ -358,7 +365,7 @@ struct CGameID{
 
 constexpr unsigned int k_unSteamAccountIDMask = 0xFFFFFFFF;
 constexpr unsigned int k_unSteamAccountInstanceMask = 0x000FFFFF;
-constexpr unsigned int k_unSteamUserDefaultInstance	= 1; // fixed instance for all individual users
+constexpr unsigned int k_unSteamUserDefaultInstance = 1; // fixed instance for all individual users
 
 struct CSteamID
 {
@@ -371,9 +378,9 @@ struct CSteamID
 		m_steamid.m_comp.m_unAccountInstance = 0;
 	}
 
-	CSteamID( uint64 ulSteamID )
+	CSteamID(uint64 ulSteamID)
 	{
-		SetFromUint64( ulSteamID );
+		SetFromUint64(ulSteamID);
 	}
 
 	//-----------------------------------------------------------------------------
@@ -382,13 +389,13 @@ struct CSteamID
 	//			eUniverse -		Universe this account belongs to
 	//			eAccountType -	Type of account
 	//-----------------------------------------------------------------------------
-	void Set( uint32 unAccountID, EUniverse eUniverse, EAccountType eAccountType )
+	void Set(uint32 unAccountID, EUniverse eUniverse, EAccountType eAccountType)
 	{
 		m_steamid.m_comp.m_unAccountID = unAccountID;
 		m_steamid.m_comp.m_EUniverse = eUniverse;
 		m_steamid.m_comp.m_EAccountType = eAccountType;
 
-		if ( eAccountType == k_EAccountTypeClan || eAccountType == k_EAccountTypeGameServer )
+		if (eAccountType == k_EAccountTypeClan || eAccountType == k_EAccountTypeGameServer)
 		{
 			m_steamid.m_comp.m_unAccountInstance = 0;
 		}
@@ -398,7 +405,7 @@ struct CSteamID
 		}
 	}
 
-	void SetFromUint64( uint64 ulSteamID )
+	void SetFromUint64(uint64 ulSteamID)
 	{
 		m_steamid.m_unAll64Bits = ulSteamID;
 	}
@@ -408,10 +415,11 @@ struct CSteamID
 		return m_steamid.m_unAll64Bits;
 	}
 
-	void SetAccountID( uint32 unAccountID )		{ m_steamid.m_comp.m_unAccountID = unAccountID; }
-	AccountID_t GetAccountID() const			{ return m_steamid.m_comp.m_unAccountID; }
+	void SetAccountID(uint32 unAccountID) { m_steamid.m_comp.m_unAccountID = unAccountID; }
+	AccountID_t GetAccountID() const { return m_steamid.m_comp.m_unAccountID; }
 
-	friend std::ostream& operator<<(std::ostream& os, const CSteamID& steamId){
+	friend std::ostream &operator<<(std::ostream &os, const CSteamID &steamId)
+	{
 		return os << steamId.ConvertToUint64();
 	}
 
@@ -420,19 +428,18 @@ private:
 	{
 		struct SteamIDComponent_t
 		{
-			uint32				m_unAccountID : 32;			// unique account identifier
-			unsigned int		m_unAccountInstance : 20;	// dynamic instance ID
-			unsigned int		m_EAccountType : 4;			// type of account - can't show as EAccountType, due to signed / unsigned difference
-			EUniverse			m_EUniverse : 8;	// universe this account belongs to
+			uint32 m_unAccountID : 32;			   // unique account identifier
+			unsigned int m_unAccountInstance : 20; // dynamic instance ID
+			unsigned int m_EAccountType : 4;	   // type of account - can't show as EAccountType, due to signed / unsigned difference
+			EUniverse m_EUniverse : 8;			   // universe this account belongs to
 		} m_comp;
 		uint64 m_unAll64Bits;
 	} m_steamid;
-
 };
 
 struct CAppData
 {
-	void** vfptr;
+	void **vfptr;
 	AppId_t nAppID;
 	uint32 ChangeNumber;
 	uint32 LastChangeTimeStamp;
@@ -442,20 +449,22 @@ struct CAppData
 	uint64 accessToken;
 	uint8 sha1Hash[20];
 
-	bool HasEmptyAppInfoSha() const {
+	bool HasEmptyAppInfoSha() const
+	{
 		static constexpr uint8 kEmptySha1[sizeof(sha1Hash)] = {};
 		return memcmp(sha1Hash, kEmptySha1, sizeof(sha1Hash)) == 0;
 	}
 
-	bool IsUnresolvedAppInfo() const {
+	bool IsUnresolvedAppInfo() const
+	{
 		return HasEmptyAppInfoSha() && !bSkipFlag;
 	}
 };
 
-#pragma pack(push,1)
+#pragma pack(push, 1)
 struct CSteamApp
 {
-	void** vfptr;
+	void **vfptr;
 	CGameID GameID;
 	AppId_t nAppID;
 	uint16 _unknown1;
