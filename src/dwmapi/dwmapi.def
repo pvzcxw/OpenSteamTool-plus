@@ -1,0 +1,106 @@
+; Proxy exports matching the local 64-bit System32 dwmapi.dll export table
+LIBRARY "dwmapi"
+EXPORTS
+    DllCanUnloadNow @111
+    DllGetClassObject @115
+    DwmAttachMilContent @116
+    DwmDefWindowProc @117
+    DwmDetachMilContent @118
+    DwmEnableBlurBehindWindow @119
+    DwmEnableComposition @102
+    DwmEnableMMCSS @120
+    DwmExtendFrameIntoClientArea @121
+    DwmFlush @122
+    DwmGetColorizationColor @123
+    DwmGetCompositionTimingInfo @125
+    DwmGetGraphicsStreamClient @126
+    DwmGetGraphicsStreamTransformHint @129
+    DwmGetTransportAttributes @130
+    DwmGetUnmetTabRequirements @133
+    DwmGetWindowAttribute @134
+    DwmInvalidateIconicBitmaps @149
+    DwmIsCompositionEnabled @188
+    DwmModifyPreviousDxFrameDuration @189
+    DwmQueryThumbnailSourceSize @190
+    DwmRegisterThumbnail @191
+    DwmRenderGesture @192
+    DwmSetDxFrameDuration @193
+    DwmSetIconicLivePreviewBitmap @194
+    DwmSetIconicThumbnail @195
+    DwmSetPresentParameters @196
+    DwmSetWindowAttribute @197
+    DwmShowContact @198
+    DwmTetherContact @199
+    DwmTetherTextContact @156
+    DwmTransitionOwnedWindow @200
+    DwmUnregisterThumbnail @201
+    DwmUpdateThumbnailProperties @202
+    DwmpAllocateSecurityDescriptor @136
+    DwmpDxGetWindowSharedSurface @100
+    DwmpDxUpdateWindowSharedSurface @101
+    DwmpDxgiIsThreadDesktopComposited @128
+    DwmpEnableDDASupport @143
+    DwmpFreeSecurityDescriptor @137
+    DwmpGetColorizationParameters @127
+    DwmpRenderFlick @135
+    DwmpSetColorizationParameters @131
+    DwmpUpdateProxyWindowForCapture @183
+    DwmpOrdinal103 @103 NONAME
+    DwmpOrdinal104 @104 NONAME
+    DwmpOrdinal105 @105 NONAME
+    DwmpOrdinal106 @106 NONAME
+    DwmpOrdinal107 @107 NONAME
+    DwmpOrdinal108 @108 NONAME
+    DwmpOrdinal109 @109 NONAME
+    DwmpOrdinal110 @110 NONAME
+    DwmpOrdinal112 @112 NONAME
+    DwmpOrdinal113 @113 NONAME
+    DwmpOrdinal114 @114 NONAME
+    DwmpOrdinal124 @124 NONAME
+    DwmpOrdinal132 @132 NONAME
+    DwmpOrdinal138 @138 NONAME
+    DwmpOrdinal139 @139 NONAME
+    DwmpOrdinal140 @140 NONAME
+    DwmpOrdinal141 @141 NONAME
+    DwmpOrdinal142 @142 NONAME
+    DwmpOrdinal144 @144 NONAME
+    DwmpOrdinal145 @145 NONAME
+    DwmpOrdinal146 @146 NONAME
+    DwmpOrdinal147 @147 NONAME
+    DwmpOrdinal148 @148 NONAME
+    DwmpOrdinal150 @150 NONAME
+    DwmpOrdinal151 @151 NONAME
+    DwmpOrdinal152 @152 NONAME
+    DwmpOrdinal153 @153 NONAME
+    DwmpOrdinal154 @154 NONAME
+    DwmpOrdinal155 @155 NONAME
+    DwmpOrdinal157 @157 NONAME
+    DwmpOrdinal158 @158 NONAME
+    DwmpOrdinal159 @159 NONAME
+    DwmpOrdinal160 @160 NONAME
+    DwmpOrdinal161 @161 NONAME
+    DwmpOrdinal162 @162 NONAME
+    DwmpOrdinal163 @163 NONAME
+    DwmpOrdinal164 @164 NONAME
+    DwmpOrdinal165 @165 NONAME
+    DwmpOrdinal166 @166 NONAME
+    DwmpOrdinal167 @167 NONAME
+    DwmpOrdinal168 @168 NONAME
+    DwmpOrdinal169 @169 NONAME
+    DwmpOrdinal170 @170 NONAME
+    DwmpOrdinal171 @171 NONAME
+    DwmpOrdinal172 @172 NONAME
+    DwmpOrdinal173 @173 NONAME
+    DwmpOrdinal174 @174 NONAME
+    DwmpOrdinal175 @175 NONAME
+    DwmpOrdinal176 @176 NONAME
+    DwmpOrdinal177 @177 NONAME
+    DwmpOrdinal178 @178 NONAME
+    DwmpOrdinal179 @179 NONAME
+    DwmpOrdinal180 @180 NONAME
+    DwmpOrdinal181 @181 NONAME
+    DwmpOrdinal182 @182 NONAME
+    DwmpOrdinal184 @184 NONAME
+    DwmpOrdinal185 @185 NONAME
+    DwmpOrdinal186 @186 NONAME
+    DwmpOrdinal187 @187 NONAME
