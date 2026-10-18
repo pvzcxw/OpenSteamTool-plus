@@ -2,6 +2,14 @@ name: Discord Commit Notifications
 
 on:
   push:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - closed
+  release:
+    types:
+      - published
 
 permissions: {}
 
