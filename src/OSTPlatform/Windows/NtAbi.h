@@ -49,22 +49,8 @@ namespace OSTPlatform::Windows::NtAbi {
         PVOID processParameters;
     };
 
-    struct UnicodeString {
-        uint16_t length;
-        uint16_t maximumLength;
-        uint32_t padding;
-        PVOID    buffer;
-    };
-
-    struct UnicodeString32 {
-        uint16_t length;
-        uint16_t maximumLength;
-        uint32_t buffer;
-    };
-
     struct RtlUserProcessParameters {
-        BYTE reserved0[0x70];
-        UnicodeString commandLine;
+        BYTE reserved0[0x80];
         PVOID environment;
     };
 
@@ -74,16 +60,13 @@ namespace OSTPlatform::Windows::NtAbi {
     };
 
     struct RtlUserProcessParameters32 {
-        BYTE reserved0[0x40];
-        UnicodeString32 commandLine;
+        BYTE reserved0[0x48];
         uint32_t environment;
     };
 
     static_assert(offsetof(Peb, processParameters) == 0x20);
-    static_assert(offsetof(RtlUserProcessParameters, commandLine) == 0x70);
     static_assert(offsetof(RtlUserProcessParameters, environment) == 0x80);
     static_assert(offsetof(Peb32, processParameters) == 0x10);
-    static_assert(offsetof(RtlUserProcessParameters32, commandLine) == 0x40);
     static_assert(offsetof(RtlUserProcessParameters32, environment) == 0x48);
 
 } // namespace OSTPlatform::Windows::NtAbi

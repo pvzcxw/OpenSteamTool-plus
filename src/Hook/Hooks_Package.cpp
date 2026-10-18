@@ -3,7 +3,6 @@
 #include "Hooks_SteamUI.h"
 #include "dllmain.h"
 #include "Utils/HookSupport/VehCommon.h"
-#include <mutex>
 #include <unordered_set>
 
 namespace {
@@ -17,8 +16,6 @@ namespace {
     PackageInfo* g_pInjectedPackageInfo = nullptr;
     bool  g_licenseInitialized = false;
     bool  g_licenseRefreshPending = false;
-    std::mutex g_licenseMutex;
-    std::unordered_set<AppId_t> g_sharedLicenseApps;
 
     constexpr PackageId_t kInjectedPackageId = 0;
     constexpr uint64_t kInjectedPkgAccessToken = 10660652434190618804ull;
@@ -100,17 +97,8 @@ namespace {
         bool result = oCheckAppOwnership(pObj, appId, pOwn);
         TryInitFakeLicenseOnce();
 
-        {
-            std::lock_guard<std::mutex> lock(g_licenseMutex);
-            if (pOwn && (pOwn->bFamilyShared || pOwn->bBorrowed))
-                g_sharedLicenseApps.insert(appId);
-            else
-                g_sharedLicenseApps.erase(appId);
-        }
-
         if (LuaConfig::HasDepot(appId,false)) {
-            if (result && pOwn->ExistInPackageNums > 1 &&
-                !pOwn->bFamilyShared && !pOwn->bBorrowed) {
+            if (result && pOwn->ExistInPackageNums > 1) {
                 // Actually owned — record so HasDepot excludes it going forward
                 LuaConfig::MarkOwned(appId);
                 pOwn->ReleaseState = EAppReleaseState::Released;
@@ -128,15 +116,6 @@ namespace {
 }
 
 namespace Hooks_Package {
-    bool IsSharedLicense(AppId_t appId) {
-        std::lock_guard<std::mutex> lock(g_licenseMutex);
-        return g_sharedLicenseApps.count(appId) != 0;
-    }
-
-    bool HasValidLicense(AppId_t appId) {
-        return LuaConfig::IsOwned(appId) || IsSharedLicense(appId);
-    }
-
     void Install() {
         RESOLVE_C(CUtlMemoryGrow);
         RESOLVE_C(MarkLicenseAsChanged);

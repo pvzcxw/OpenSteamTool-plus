@@ -2,8 +2,6 @@
 #include "Hooks_IPC_ISteamUser.h"
 #include "PendingAPICalls.h"
 #include "Utils/Tickets/AppTicket.h"
-#include "Utils/Config/LuaConfig.h"
-#include "Hook/Hooks_Package.h"
 #include "Pipe/PipeManager.h"
 #include "Pipe/Features/DenuvoAuth/DenuvoAuth.h"
 #include "Utils/Logging/Log.h"
@@ -18,8 +16,6 @@ namespace {
         AppId_t appId = Hooks_Misc::ResolveAppId();
         GetSteamIDResp resp{pWrite};
         if (!resp.ok()) return;
-
-        if (Hooks_Package::HasValidLicense(appId) && !LuaConfig::IsDAuth2(appId)) return;
 
         if (!PipeManager::DenuvoAuth::IsAuthorizedPipe(pipe)) {
             LOG_IPC_TRACE("IClientUser::GetSteamID: AppId={} not in authorization window, skip spoofing", appId);
@@ -74,8 +70,6 @@ namespace {
         resp.set_piSignature(ticket.signatureOffset);
         resp.set_pcbSignature(ticket.signatureSize);
 
-        PipeManager::DenuvoAuth::OnOwnershipTicketRequested(pipe, appId);
-
         LOG_IPC_DEBUG("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} {}", 
                         appId,resp.DebugString());
     }
@@ -97,7 +91,6 @@ namespace {
 
         const SteamAPICall_t hAsyncCall = resp.returnValue();
         PendingAPICalls::RecordEncryptedTicket(hAsyncCall, appId);
-        PipeManager::DenuvoAuth::OnEncryptedTicketRequested(pipe, appId);
         LOG_IPC_DEBUG("RequestEncryptedAppTicket: AppId={} hAsyncCall=0x{:X} - recorded",
                       appId, hAsyncCall);
     }
@@ -125,8 +118,6 @@ namespace {
         resp.set_returnValue(true);
         resp.set_pcbTicket(ticketSize);
         if (!resp.set_pTicket(ticket)) return;
-
-        PipeManager::DenuvoAuth::OnEncryptedTicketDelivered(pipe, appId);
 
         LOG_IPC_DEBUG("GetEncryptedAppTicket: AppId={} {}", appId, resp.DebugString());
     }

@@ -28,12 +28,6 @@ namespace LuaConfig{
     std::unordered_map<uint64_t, ManifestOverride> ManifestOverrides{};
     std::unordered_map<AppId_t, uint64_t> StatSteamIdSet{};
     std::unordered_set<AppId_t> OwnedAppIdSet{};
-    std::unordered_set<AppId_t> DAuth2Set{};
-    std::unordered_set<AppId_t> NoDenuvoSet{};
-    std::unordered_set<AppId_t> ForcedDenuvoSet{};
-    std::unordered_set<AppId_t> CmdLineDAuth2Set{};
-    std::unordered_set<AppId_t> CmdLineNoDenuvoSet{};
-    std::unordered_set<AppId_t> CmdLineForcedDenuvoSet{};
 
     // Per-file tracking: which depots each .lua file contributed.
     static std::string g_currentFile;
@@ -425,36 +419,6 @@ namespace LuaConfig{
     }
 
     // ── init / cleanup ───────────────────────────────────────────
-    static int lua_dauth2(lua_State* L) {
-        if (lua_gettop(L) < 1 || !lua_isinteger(L, 1))
-            return luaL_error(L, "dauth2 requires (appid: integer)");
-        const lua_Integer value = lua_tointeger(L, 1);
-        if (value <= 0 || value > UINT32_MAX)
-            return luaL_error(L, "dauth2: appid out of range");
-        DAuth2Set.insert(static_cast<AppId_t>(value));
-        return 0;
-    }
-
-    static int lua_nodenuvo(lua_State* L) {
-        if (lua_gettop(L) < 1 || !lua_isinteger(L, 1))
-            return luaL_error(L, "nodenuvo requires (appid: integer)");
-        const lua_Integer value = lua_tointeger(L, 1);
-        if (value <= 0 || value > UINT32_MAX)
-            return luaL_error(L, "nodenuvo: appid out of range");
-        NoDenuvoSet.insert(static_cast<AppId_t>(value));
-        return 0;
-    }
-
-    static int lua_forcedenuvo(lua_State* L) {
-        if (lua_gettop(L) < 1 || !lua_isinteger(L, 1))
-            return luaL_error(L, "forcedenuvo requires (appid: integer)");
-        const lua_Integer value = lua_tointeger(L, 1);
-        if (value <= 0 || value > UINT32_MAX)
-            return luaL_error(L, "forcedenuvo: appid out of range");
-        ForcedDenuvoSet.insert(static_cast<AppId_t>(value));
-        return 0;
-    }
-
     static bool Initialize() {
         if (g_lua_state)
             return true;
@@ -487,10 +451,6 @@ namespace LuaConfig{
         register_func(g_lua_state, "setappticket", lua_setAppticket);
         register_func(g_lua_state, "seteticket", lua_setEticket);
         register_func(g_lua_state, "setstat", lua_setStat);
-        register_func(g_lua_state, "dauth2", lua_dauth2);
-        register_func(g_lua_state, "nodenuvo", lua_nodenuvo);
-        register_func(g_lua_state, "disallowdenuvo", lua_nodenuvo);
-        register_func(g_lua_state, "forcedenuvo", lua_forcedenuvo);
         return true;
     }
 
@@ -516,33 +476,6 @@ namespace LuaConfig{
             LOG_PACKAGE_INFO("Marking app {} as owned", AppId);
             OwnedAppIdSet.insert(AppId);
         }
-    }
-
-    bool IsDAuth2(AppId_t appId) {
-        return DAuth2Set.count(appId) != 0 || CmdLineDAuth2Set.count(appId) != 0;
-    }
-
-    void SetCmdLineDAuth2(AppId_t appId, bool active) {
-        if (active) CmdLineDAuth2Set.insert(appId);
-        else CmdLineDAuth2Set.erase(appId);
-    }
-
-    bool IsNoDenuvo(AppId_t appId) {
-        return NoDenuvoSet.count(appId) != 0 || CmdLineNoDenuvoSet.count(appId) != 0;
-    }
-
-    void SetCmdLineNoDenuvo(AppId_t appId, bool active) {
-        if (active) CmdLineNoDenuvoSet.insert(appId);
-        else CmdLineNoDenuvoSet.erase(appId);
-    }
-
-    bool IsForcedDenuvo(AppId_t appId) {
-        return ForcedDenuvoSet.count(appId) != 0 || CmdLineForcedDenuvoSet.count(appId) != 0;
-    }
-
-    void SetCmdLineForcedDenuvo(AppId_t appId, bool active) {
-        if (active) CmdLineForcedDenuvoSet.insert(appId);
-        else CmdLineForcedDenuvoSet.erase(appId);
     }
 
     std::vector<AppId_t> GetAllDepotIds() {

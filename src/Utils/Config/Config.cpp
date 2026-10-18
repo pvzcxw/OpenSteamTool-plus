@@ -4,8 +4,6 @@
 
 #include <toml++/toml.hpp>
 
-#include <algorithm>
-#include <cctype>
 #include <filesystem>
 #include <mutex>
 
@@ -13,14 +11,12 @@ namespace Config {
 namespace {
 
     struct Snapshot {
-        std::string manifestProvider = "20770407";
-        bool manifestFailover = true;
+        std::string manifestProvider = "opensteamtool";
         ManifestTimeouts manifestTimeouts;
         LogLevel logLevel = LogLevel::Debug;
         std::string logDir;
         std::vector<std::string> luaPaths;
         std::string remoteUrlTemplate;
-        std::string remoteOrder = "gh-proxy-first";
         bool statsEnableApi = true;
         InjectionSettings injection;
         CloudSettings cloud;
@@ -52,12 +48,10 @@ namespace {
         manifestTimeoutConnect = snapshot.manifestTimeouts.connect;
         manifestTimeoutSend    = snapshot.manifestTimeouts.send;
         manifestTimeoutRecv    = snapshot.manifestTimeouts.recv;
-        manifestFailover       = snapshot.manifestFailover;
         logLevel               = snapshot.logLevel;
         logDir                 = snapshot.logDir;
         luaPaths               = snapshot.luaPaths;
         remoteUrlTemplate      = snapshot.remoteUrlTemplate;
-        remoteOrder            = snapshot.remoteOrder;
         statsEnableApi         = snapshot.statsEnableApi;
         injectEnabled          = snapshot.injection.enabled;
         injectLibraryX86       = snapshot.injection.libraryX86;
@@ -69,26 +63,8 @@ namespace {
     void ApplyManifestProvider(const std::string& provider) {
         if (!ManifestClient::SetProvider(provider)) {
             LOG_WARN("Unknown manifest.url \"{}\", keeping default", provider);
-            ManifestClient::SetProvider("20770407");
+            ManifestClient::SetProvider("opensteamtool");
         }
-    }
-
-    static std::string NormalizeRemoteOrder(std::string value) {
-        for (auto& c : value)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        return value;
-    }
-
-    // WinHTTP treats zero as an infinite timeout. Clamp values so one source
-    // cannot exceed the shared manifest fetch budget.
-    static void ReadTimeoutMs(const toml::table& manifest, const char* key, uint32_t& out) {
-        const auto value = manifest[key].value<int64_t>();
-        if (!value) return;
-        constexpr int64_t kMin = 1;
-        constexpr int64_t kMax = ManifestClient::kFetchBudgetMs;
-        if (*value < kMin || *value > kMax)
-            LOG_WARN("manifest.{} = {} is outside [{}, {}], clamping", key, *value, kMin, kMax);
-        out = static_cast<uint32_t>(std::clamp<int64_t>(*value, kMin, kMax));
     }
 
     LoadResult ApplySnapshotLocked(const Snapshot& snapshot) {
@@ -108,16 +84,13 @@ namespace {
         if (!std::filesystem::exists(configPath)) {
             LOG_INFO("Config file not found, using defaults");
             ApplyManifestProvider(snapshot.manifestProvider);
-            ManifestClient::SetFailoverEnabled(snapshot.manifestFailover);
             LoadResult result = ApplySnapshotLocked(snapshot);
-            LOG_INFO("Config loaded: manifest.url={} manifest.failover={} log.level={} lua.paths={} stats.enable_api={} remote.url_template={} remote.order={}",
+            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} remote.url_template={}",
                      ManifestClient::ActiveProviderName(),
-                     ManifestClient::IsFailoverEnabled(),
                      ToString(GetLogLevel()),
                      (uint32_t)GetLuaPaths().size(),
                      GetStatsEnableApi(),
-                     GetRemoteUrlTemplate().empty() ? "<default>" : GetRemoteUrlTemplate(),
-                     GetRemoteOrder());
+                     GetRemoteUrlTemplate().empty() ? "<default>" : GetRemoteUrlTemplate());
             return result;
         }
 
@@ -129,12 +102,14 @@ namespace {
                 if (auto val = (*manifest)["url"].value<std::string>()) {
                     snapshot.manifestProvider = *val;
                 }
-                if (auto val = (*manifest)["failover"].value<bool>())
-                    snapshot.manifestFailover = *val;
-                ReadTimeoutMs(*manifest, "timeout_resolve_ms", snapshot.manifestTimeouts.resolve);
-                ReadTimeoutMs(*manifest, "timeout_connect_ms", snapshot.manifestTimeouts.connect);
-                ReadTimeoutMs(*manifest, "timeout_send_ms", snapshot.manifestTimeouts.send);
-                ReadTimeoutMs(*manifest, "timeout_recv_ms", snapshot.manifestTimeouts.recv);
+                if (auto val = (*manifest)["timeout_resolve_ms"].value<int64_t>())
+                    snapshot.manifestTimeouts.resolve = static_cast<uint32_t>(*val);
+                if (auto val = (*manifest)["timeout_connect_ms"].value<int64_t>())
+                    snapshot.manifestTimeouts.connect = static_cast<uint32_t>(*val);
+                if (auto val = (*manifest)["timeout_send_ms"].value<int64_t>())
+                    snapshot.manifestTimeouts.send = static_cast<uint32_t>(*val);
+                if (auto val = (*manifest)["timeout_recv_ms"].value<int64_t>())
+                    snapshot.manifestTimeouts.recv = static_cast<uint32_t>(*val);
             }
 
             // [log]
@@ -164,15 +139,6 @@ namespace {
                 if (auto val = (*remote)["url_template"].value<std::string>()) {
                     snapshot.remoteUrlTemplate = *val;
                 }
-                if (auto val = (*remote)["order"].value<std::string>()) {
-                    const std::string order = NormalizeRemoteOrder(*val);
-                    if (order == "github-first" || order == "gh-proxy-first" ||
-                        order == "jsdelivr-first") {
-                        snapshot.remoteOrder = order;
-                    } else {
-                        LOG_WARN("Unknown remote.order '{}', keeping default '{}'", *val, snapshot.remoteOrder);
-                    }
-                }
             }
 
             // [stats]
@@ -201,16 +167,13 @@ namespace {
             }
 
             ApplyManifestProvider(snapshot.manifestProvider);
-            ManifestClient::SetFailoverEnabled(snapshot.manifestFailover);
             LoadResult result = ApplySnapshotLocked(snapshot);
-            LOG_INFO("Config loaded: manifest.url={} manifest.failover={} log.level={} lua.paths={} stats.enable_api={} remote.url_template={} remote.order={}",
+            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} remote.url_template={}",
                      ManifestClient::ActiveProviderName(),
-                     ManifestClient::IsFailoverEnabled(),
                      ToString(snapshot.logLevel),
                      (uint32_t)snapshot.luaPaths.size(),
                      snapshot.statsEnableApi,
-                     snapshot.remoteUrlTemplate.empty() ? "<default>" : snapshot.remoteUrlTemplate,
-                     snapshot.remoteOrder);
+                     snapshot.remoteUrlTemplate.empty() ? "<default>" : snapshot.remoteUrlTemplate);
             return result;
 
         } catch (const toml::parse_error& e) {
@@ -225,7 +188,6 @@ namespace {
         }
         if (shouldApplyDefault) {
             ApplyManifestProvider(snapshot.manifestProvider);
-            ManifestClient::SetFailoverEnabled(snapshot.manifestFailover);
             std::lock_guard lock(g_mutex);
             const bool luaChanged = luaPaths != snapshot.luaPaths;
             ApplySnapshot(snapshot);
@@ -263,11 +225,6 @@ namespace {
     std::string GetRemoteUrlTemplate() {
         std::lock_guard lock(g_mutex);
         return remoteUrlTemplate;
-    }
-
-    std::string GetRemoteOrder() {
-        std::lock_guard lock(g_mutex);
-        return remoteOrder;
     }
 
     InjectionSettings GetInjectionSettings() {

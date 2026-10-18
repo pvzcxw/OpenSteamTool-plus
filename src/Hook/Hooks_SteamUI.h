@@ -5,10 +5,6 @@
 // Hooks targeting steamui.dll:
 
 namespace Hooks_SteamUI {
-    // Install the built-in SteamUI module-loader hook before loading remote
-    // pattern metadata; this hook is independent of PatternLoader.
-    bool InstallModuleLoader() noexcept;
-
     void Install();
     void Uninstall();
 

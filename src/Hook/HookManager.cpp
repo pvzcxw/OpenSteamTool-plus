@@ -13,10 +13,6 @@
 
 namespace SteamUI {
 
-    bool CoreLoaderHook() {
-        return Hooks_SteamUI::InstallModuleLoader();
-    }
-
     void CoreHook()   { 
         Hooks_SteamUI::Install(); 
     }
