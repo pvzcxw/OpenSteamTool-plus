@@ -26,7 +26,7 @@ if(NOT WIN32)
 endif()
 
 # Keep the requested DLL artifacts in a stable directory for every generator.
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/out/dwmapi-fixed/$<0:>")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/out/build/$<0:>")
 
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
 configure_file(
