@@ -25,6 +25,9 @@ if(NOT WIN32)
     return()
 endif()
 
+# Keep the requested DLL artifacts in a stable directory for every generator.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/out/dwmapi-fixed/$<0:>")
+
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenSteamToolBuildInfo.h.in"
@@ -132,10 +135,7 @@ add_library(OpenSteamTool SHARED
     Hook/HookManager.cpp
     Hook/Hooks_CallBack.cpp
     Hook/Hooks_Decryption.cpp
-<<<<<<< HEAD
     Hook/Hooks_Diversion.cpp
-=======
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
     Hook/Hooks_IPC.cpp
     Hook/Hooks_IPC_ISteamUser.cpp
     Hook/Hooks_IPC_ISteamUtils.cpp

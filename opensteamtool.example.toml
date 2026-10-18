@@ -9,6 +9,9 @@ level = "debug"
 
 [manifest]
 # Which upstream API to query for depot manifest request codes.
+#   "20770407"     → https://20770407.xyz/manifest/{depotId}/{gid}
+#   "SDM"          → https://steamapi.993499094.xyz/manifest/{depotId}/{gid}
+#   "manifestdex"  → https://manifest.manifestdex.com/{gid} (ManifestDeX user agent is added automatically)
 #   "opensteamtool" → https://manifest.opensteamtool.com/{gid}   (default)
 #   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (recommended for China users)
 #   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}

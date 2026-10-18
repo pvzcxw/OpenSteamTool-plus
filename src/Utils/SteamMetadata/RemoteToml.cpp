@@ -19,6 +19,12 @@ namespace {
     constexpr const char* kJsdelivrTemplate =
         "https://cdn.jsdelivr.net/gh/OpenSteam001/steam-monitor@"
         "{channel}/{component}/{sha256}.toml";
+    constexpr const char* kHazreProxyTemplate =
+        "https://gh-proxy.com/https://raw.githubusercontent.com/hazre/steam-monitor/"
+        "main/{channel}/{component}/{sha256}.toml";
+    constexpr const char* kHazreGithubTemplate =
+        "https://raw.githubusercontent.com/hazre/steam-monitor/"
+        "main/{channel}/{component}/{sha256}.toml";
 
     static bool HasPlaceholder(std::string_view text, std::string_view placeholder)
     {
@@ -57,7 +63,8 @@ namespace {
     {
         const std::string remoteUrlTemplate = Config::GetRemoteUrlTemplate();
         if (remoteUrlTemplate.empty())
-            return { kGithubTemplate, kJsdelivrTemplate };
+            return { kGithubTemplate, kJsdelivrTemplate,
+                     kHazreProxyTemplate, kHazreGithubTemplate };
 
         if (!IsValidTemplate(remoteUrlTemplate)) {
             LOG_WARN("RemoteToml: remote.url_template must contain "
@@ -119,7 +126,7 @@ Result Fetch(const Request& request)
         if (http.ok && http.status == 404) {
             LOG_WARN("RemoteToml({}/{}): mirror has no such file (HTTP 404): {}",
                      request.channel, request.component, lastUrl);
-            break;   // all mirrors serve same data
+            continue;
         }
 
         if (i + 1 < urlTemplates.size()) {
