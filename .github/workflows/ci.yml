@@ -36,5 +36,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: OpenSteamTool-${{ matrix.config }}-pr${{ github.event.pull_request.number || github.run_number }}
-          path: src/out/build/${{ matrix.config }}/
+          path: |
+            build/${{ matrix.config }}/dwmapi.dll
+            build/${{ matrix.config }}/dwmapi.ilk
+            build/${{ matrix.config }}/dwmapi.exp
+            build/${{ matrix.config }}/dwmapi.pdb
+            build/${{ matrix.config }}/OpenSteamTool.dll
+            build/${{ matrix.config }}/OpenSteamTool.ilk
+            build/${{ matrix.config }}/OpenSteamTool.exp
+            build/${{ matrix.config }}/OpenSteamTool.pdb
           retention-days: 7

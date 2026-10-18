@@ -7,7 +7,7 @@ cd /d "%~dp0"
 REM Optional environment variables: GENERATOR, ARCH, CONFIG, BUILD_DIR.
 if "%CONFIG%"=="" set "CONFIG=Release"
 if "%ARCH%"=="" set "ARCH=x64"
-if "%BUILD_DIR%"=="" set "BUILD_DIR=%~dp0src\out\build\build-bat"
+if "%BUILD_DIR%"=="" set "BUILD_DIR=%~dp0build"
 
 echo [INFO] Build directory: %BUILD_DIR%
 echo [INFO] Configuration: %CONFIG%
@@ -30,16 +30,16 @@ echo [INFO] Building dwmapi and OpenSteamTool...
 cmake --build "%BUILD_DIR%" --config "%CONFIG%" --target dwmapi OpenSteamTool --parallel
 if errorlevel 1 goto :fail
 
-if not exist "src\out\dwmapi-fixed\dwmapi.dll" goto :missing_output
-if not exist "src\out\dwmapi-fixed\OpenSteamTool.dll" goto :missing_output
+if not exist "%~dp0build\%CONFIG%\dwmapi.dll" goto :missing_output
+if not exist "%~dp0build\%CONFIG%\OpenSteamTool.dll" goto :missing_output
 
 echo [OK] Built artifacts:
-echo      %~dp0src\out\build\dwmapi.dll
-echo      %~dp0src\out\build\OpenSteamTool.dll
+echo      %~dp0build\%CONFIG%\dwmapi.dll
+echo      %~dp0build\%CONFIG%\OpenSteamTool.dll
 exit /b 0
 
 :missing_output
-echo [ERROR] Build finished, but the expected DLL output was not found in src\out\dwmapi-fixed.
+echo [ERROR] Build finished, but the expected DLL output was not found in build\%CONFIG%.
 exit /b 1
 
 :fail

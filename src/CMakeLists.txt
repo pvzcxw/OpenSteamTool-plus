@@ -25,9 +25,9 @@ if(NOT WIN32)
     return()
 endif()
 
-# Keep the requested DLL artifacts in a stable directory for every generator.
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/out/build/$<0:>")
-
+# Keep generated files and CMake's working files in the repository-level
+# build tree. FetchCache.cmake keeps dependency sources in the repository-level
+# .deps directory.
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenSteamToolBuildInfo.h.in"
@@ -187,3 +187,16 @@ add_library(xinput1_4 SHARED
     xinput1_4/xinput1_4.cpp
     xinput1_4/xinput1_4.def
 )
+
+# Place final DLLs and their linker/debug sidecars in build/<configuration>.
+# Use a configuration generator expression so single- and multi-config
+# generators share the same layout without CMake adding another config folder.
+set(_OST_DLL_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../build/$<CONFIG>")
+foreach(_target IN ITEMS OpenSteamTool dwmapi xinput1_4)
+    set_target_properties(${_target} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${_OST_DLL_OUTPUT_DIRECTORY}"
+        ARCHIVE_OUTPUT_DIRECTORY "${_OST_DLL_OUTPUT_DIRECTORY}"
+        PDB_OUTPUT_DIRECTORY "${_OST_DLL_OUTPUT_DIRECTORY}"
+        COMPILE_PDB_OUTPUT_DIRECTORY "${_OST_DLL_OUTPUT_DIRECTORY}"
+    )
+endforeach()
