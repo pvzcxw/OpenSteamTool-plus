@@ -1,0 +1,100 @@
+name: Discord Commit Notifications
+
+on:
+  push:
+
+permissions: {}
+
+jobs:
+  notify-discord:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send commit information to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "Missing DISCORD_WEBHOOK_URL secret"
+            exit 1
+          fi
+
+          COMMITS=$(jq -r '
+            [
+              .commits[:8][]
+              | "- [`" + (.id[0:7]) + "`](" + .url + ") "
+                + ((.message | split("\n")[0])[0:100])
+                + " — " + .author.name
+            ] | join("\n")
+          ' "$GITHUB_EVENT_PATH")
+
+          if [ -z "$COMMITS" ]; then
+            COMMITS="No commit details in this push event."
+          fi
+
+          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+
+          PAYLOAD=$(jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg branch "$GITHUB_REF_NAME" \
+            --arg actor "$GITHUB_ACTOR" \
+            --arg commits "$COMMITS" \
+            --arg repo_url "$REPO_URL" \
+            --arg commit_url "${REPO_URL}/commit/${GITHUB_SHA}" \
+            '{
+              username: "GitHub",
+              embeds: [{
+                title: ("New push: " + $repo),
+                url: $repo_url,
+                color: 5793266,
+                fields: [
+                  {
+                    name: "Branch",
+                    value: ("`" + $branch + "`"),
+                    inline: true
+                  },
+                  {
+                    name: "Pushed by",
+                    value: $actor,
+                    inline: true
+                  },
+                  {
+                    name: "Commits",
+                    value: $commits
+                  }
+                ],
+                footer: {
+                  text: "GitHub Commit Notifications"
+                },
+                timestamp: (now | todate)
+              }],
+              allowed_mentions: {
+                parse: []
+              }
+            }')
+
+          HTTP_CODE=$(curl --silent --show-error \
+            --output /tmp/discord-response.txt \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --data "$PAYLOAD" \
+            "$DISCORD_WEBHOOK_URL")
+
+          if [ "$HTTP_CODE" != "200" ] && \
+             [ "$HTTP_CODE" != "204" ]; then
+            echo "Discord webhook failed: HTTP $HTTP_CODE"
+            cat /tmp/discord-response.txt
+            exit 1
+          fi
+
+          echo "Discord notification sent successfully."
