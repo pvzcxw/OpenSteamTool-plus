@@ -38,6 +38,7 @@ namespace Config {
     std::string GetLogDir();
     std::vector<std::string> GetLuaPaths();
     std::string GetRemoteUrlTemplate();
+    std::string GetRemoteOrder();
     InjectionSettings GetInjectionSettings();
     CloudSettings GetCloudSettings();
     bool GetStatsEnableApi();
@@ -47,6 +48,8 @@ namespace Config {
     inline uint32_t manifestTimeoutConnect = 5000;
     inline uint32_t manifestTimeoutSend    = 10000;
     inline uint32_t manifestTimeoutRecv    = 10000;
+    // 顺位回退开关：关闭时仅请求首选源。
+    inline bool manifestFailover = true;
 
     // [log]
     inline LogLevel logLevel = LogLevel::Debug;
@@ -59,6 +62,8 @@ namespace Config {
 
     // [remote]
     inline std::string remoteUrlTemplate;
+    // 默认 gh-proxy 镜像优先、GitHub 直连兜底；可配置为 "github-first"。
+    inline std::string remoteOrder = "gh-proxy-first";
 
     // [stats]
     inline bool statsEnableApi = true;

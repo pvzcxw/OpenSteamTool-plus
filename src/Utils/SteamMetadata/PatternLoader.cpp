@@ -45,6 +45,11 @@ static std::unordered_set<OSTPlatform::DynamicLibrary::ModuleHandle> g_failedMod
 // functions whose names were not found during FindPattern
 static std::vector<std::string> g_missingFunctions;
 
+// The original request is retained so a stale subset cache can be refreshed
+// once when a requested function is absent.
+static std::unordered_map<OSTPlatform::DynamicLibrary::ModuleHandle, RemoteToml::Request> g_moduleReqs;
+static std::unordered_set<OSTPlatform::DynamicLibrary::ModuleHandle> g_refreshedModules;
+
 // ---- byte-pattern scanner ----
 
 static bool ParseSig(const std::string& str,
@@ -158,7 +163,7 @@ static void ShowDownloadFailedPopup(const std::string& dllName,
         "  2. Drop a matching TOML at:\n"
         "       <Steam>\\opensteamtool\\pattern\\" + component + "\\" + sha256 + ".toml\n"
         "  3. Check upstream:\n"
-        "       https://github.com/OpenSteam001/steam-monitor/tree/pattern/" + component + "\n"
+        "       https://github.com/hazre/steam-monitor/tree/main/pattern/" + component + "\n"
         "  4. Report the diagnostics below:\n"
         "       https://github.com/OpenSteam001/OpenSteamTool/issues");
 }
@@ -171,33 +176,55 @@ namespace PatternLoader {
 
     constexpr const char* kPatternChannel = "pattern";
 
-bool Load(OSTPlatform::DynamicLibrary::ModuleHandle module, const std::string& dllPath, const std::string& component)
+bool Load(OSTPlatform::DynamicLibrary::ModuleHandle module,
+          const std::string& dllPath,
+          const std::string& component)
 {
-    namespace fs = std::filesystem;
+    const RemoteToml::Request req{ kPatternChannel, component, dllPath };
 
-    // Delegate fetch + cache + mirror fallback to RemoteToml.
-    RemoteToml::Result r = RemoteToml::Fetch({
-        kPatternChannel,
-        component,
-        dllPath,
-    });
+    auto tryParse = [](const RemoteToml::Result& result,
+                       PatternMap& out,
+                       std::string& error) -> bool {
+        if (!result.ok) return false;
+        out = ParsePatternString(result.body, &error);
+        return !out.empty();
+    };
 
-    if (r.ok) {
-        std::string parseErr;
-        PatternMap map = ParsePatternString(r.body, &parseErr);
-        if (!map.empty()) {
-            LOG_INFO("PatternLoader: loaded {} patterns for {} ({})",
-                     map.size(), component, r.fromCache ? "cache fallback" : "remote");
+    PatternMap map;
+    std::string parseErr;
+    RemoteToml::Result r = RemoteToml::Fetch(req);
+    if (tryParse(r, map, parseErr)) {
+        LOG_INFO("PatternLoader: loaded {} patterns for {} ({})",
+                 map.size(), component, r.fromCache ? "cache" : "remote");
+        g_moduleMaps[module] = std::move(map);
+        g_moduleReqs[module] = req;
+        return true;
+    }
+
+    // A non-empty cache can be stale or truncated. Drop it once and retry;
+    // failed downloads and invalid remote TOML are not retried here.
+    if (r.ok && r.fromCache) {
+        LOG_WARN("PatternLoader: parsed empty spec for {} ({}), dropping stale cache and refetching once",
+                 component, parseErr.empty() ? "no entries" : parseErr);
+        RemoteToml::Invalidate(req);
+        r = RemoteToml::Fetch(req);
+        parseErr.clear();
+        if (tryParse(r, map, parseErr)) {
+            LOG_INFO("PatternLoader: self-heal ok, loaded {} patterns for {} ({})",
+                     map.size(), component, r.fromCache ? "cache" : "remote");
             g_moduleMaps[module] = std::move(map);
+            g_moduleReqs[module] = req;
             return true;
         }
+    } else if (!r.ok) {
+        LOG_WARN("PatternLoader: download failed for {} (see RemoteToml log above)", component);
+    } else {
         LOG_WARN("PatternLoader: TOML for {} parsed empty ({})",
                  component, parseErr.empty() ? "no entries" : parseErr);
     }
 
-    // Total failure — popup + disable module's hooks.
-    std::string dllName = fs::path(dllPath).filename().string();
-    std::string sha     = r.sha256.empty() ? "(hash failed)" : r.sha256;
+    const std::string dllName = std::filesystem::path(dllPath).filename().string();
+    const std::string sha = r.sha256.empty() ? "(hash failed)" : r.sha256;
     ShowDownloadFailedPopup(dllName, sha, component);
     g_failedModules.insert(module);
     return false;
@@ -226,6 +253,33 @@ void* FindPattern(OSTPlatform::DynamicLibrary::ModuleHandle module, const char* 
 
     auto& map = mapIt->second;
     auto entryIt = map.find(key);
+    if (entryIt == map.end()) {
+        // The upstream file may have gained a subset after the first download.
+        // Refresh each module at most once during this process.
+        if (!g_refreshedModules.count(module)) {
+            g_refreshedModules.insert(module);
+            const auto reqIt = g_moduleReqs.find(module);
+            if (reqIt != g_moduleReqs.end()) {
+                LOG_WARN("PatternLoader: '{}' not in cached spec, dropping stale subset and refetching once",
+                         funcName);
+                RemoteToml::Invalidate(reqIt->second);
+                RemoteToml::Result refreshed = RemoteToml::Fetch(reqIt->second);
+                if (refreshed.ok) {
+                    std::string refreshErr;
+                    PatternMap fresh = ParsePatternString(refreshed.body, &refreshErr);
+                    if (!fresh.empty()) {
+                        LOG_INFO("PatternLoader: subset refresh ok, {} -> {} entries ({})",
+                                 map.size(), fresh.size(), refreshed.fromCache ? "cache" : "remote");
+                        map = std::move(fresh);
+                        entryIt = map.find(key);
+                    } else {
+                        LOG_WARN("PatternLoader: subset refresh parsed empty ({}), keeping old map",
+                                 refreshErr.empty() ? "no entries" : refreshErr);
+                    }
+                }
+            }
+        }
+    }
     if (entryIt == map.end()) {
         LOG_WARN("PatternLoader: no entry for '{}' (key=0x{:08X})", funcName, key);
         g_missingFunctions.emplace_back(funcName);

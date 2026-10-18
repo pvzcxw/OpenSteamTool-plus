@@ -2,6 +2,7 @@
 #include "Hooks_IPC_ISteamUtils.h"
 #include "Hooks_Misc.h"
 #include "PendingAPICalls.h"
+#include "Pipe/Features/DenuvoAuth/DenuvoAuth.h"
 #include "Steam/Callback.h"
 #include "Utils/Logging/Log.h"
 
@@ -60,6 +61,7 @@ namespace {
                             *appId, hAsyncCall);
             return false;
         }
+        PipeManager::DenuvoAuth::OnEncryptedTicketDelivered(nullptr, *appId);
         LOG_IPC_DEBUG("Set K_EResultOK for EncryptedAppTicketResponse callback, AppId={} hAsyncCall=0x{:X}",
                         *appId, hAsyncCall);
         return true;

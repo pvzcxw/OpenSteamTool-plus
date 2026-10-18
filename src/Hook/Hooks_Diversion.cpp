@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <windows.h>
@@ -33,6 +34,15 @@ std::atomic<bool> s_getModuleHandleAHooked{false};
 std::atomic<bool> s_getModuleHandleExWHooked{false};
 std::atomic<bool> s_getModuleHandleExAHooked{false};
 std::wstring s_wideDiversionPath;
+std::wstring s_wideOriginalPath;
+std::mutex s_pathMutex;
+bool s_pathsConfigured = false;
+std::mutex s_clientLoadMutex;
+std::atomic<bool> s_diversionFileReady{false};
+
+constexpr DWORD kDiversionFileReadyWaitMs = 4000;
+constexpr unsigned kDiversionLoadAttempts = 20;
+constexpr DWORD kDiversionLoadRetryMs = 50;
 
 #ifdef OPENSTEAMTOOL_LOGGING_ENABLED
 #define DIV_LOG_INFO(...)  do { if (Log::Main) LOG_INFO(__VA_ARGS__); } while (0)
@@ -74,47 +84,135 @@ std::wstring s_wideDiversionPath;
     }
 }
 
+void WaitForDiversionFileReady() noexcept {
+    if (s_diversionFileReady.load(std::memory_order_acquire)) return;
+    if (g_hDiversionFileReadyEvent) {
+        ::WaitForSingleObject(g_hDiversionFileReadyEvent, kDiversionFileReadyWaitMs);
+        return;
+    }
+    for (DWORD waited = 0; waited < kDiversionFileReadyWaitMs; waited += kDiversionLoadRetryMs) {
+        if (s_diversionFileReady.load(std::memory_order_acquire)) return;
+        ::Sleep(kDiversionLoadRetryMs);
+    }
+}
+
+HMODULE CallOriginalLoadLibraryExW(LPCWSTR path, HANDLE file, DWORD flags) noexcept {
+    if (!path) return nullptr;
+    if (s_origLoadLibraryExW) return s_origLoadLibraryExW(path, file, flags);
+    return ::LoadLibraryExW(path, file, flags);
+}
+
+HMODULE GetAlreadyLoadedOriginalClient() noexcept {
+    if (s_origGetModuleHandleW) return s_origGetModuleHandleW(L"steamclient64.dll");
+    return ::GetModuleHandleW(L"steamclient64.dll");
+}
+
+HMODULE EnsureClientModuleLoadedLocked() noexcept {
+    auto current = client_hModule.load(std::memory_order_acquire);
+    if (current) return reinterpret_cast<HMODULE>(current);
+
+    // Steam may have mapped the original before the payload arrived. Keep that
+    // module as the explicit fallback rather than destabilizing initialization.
+    if (HMODULE original = GetAlreadyLoadedOriginalClient()) {
+        client_hModule.store(reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(original),
+                             std::memory_order_release);
+        g_IsDiversionActive.store(false, std::memory_order_release);
+        DIV_LOG_WARN("Hooks_Diversion: original steamclient64.dll was already loaded; keeping original fallback");
+        return original;
+    }
+
+    if (g_IsDiversionActive.load(std::memory_order_acquire) && !s_wideDiversionPath.empty()) {
+        for (unsigned attempt = 0; attempt < kDiversionLoadAttempts; ++attempt) {
+            HMODULE shadow = CallOriginalLoadLibraryExW(
+                s_wideDiversionPath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+            if (shadow) {
+                client_hModule.store(reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(shadow),
+                                     std::memory_order_release);
+                g_IsDiversionActive.store(true, std::memory_order_release);
+                DIV_LOG_INFO("Hooks_Diversion: loaded shadow client after {} attempt(s)", attempt + 1);
+                return shadow;
+            }
+            if (attempt + 1 < kDiversionLoadAttempts) ::Sleep(kDiversionLoadRetryMs);
+        }
+        DIV_LOG_WARN("Hooks_Diversion: shadow load exhausted {} attempts (error={}); trying original client",
+                     kDiversionLoadAttempts, ::GetLastError());
+    }
+
+    g_IsDiversionActive.store(false, std::memory_order_release);
+    if (!s_wideOriginalPath.empty()) {
+        HMODULE original = CallOriginalLoadLibraryExW(
+            s_wideOriginalPath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (original) {
+            client_hModule.store(reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(original),
+                                 std::memory_order_release);
+            DIV_LOG_WARN("Hooks_Diversion: loaded original steamclient64.dll fallback");
+            return original;
+        }
+    }
+    return nullptr;
+}
+
+HMODULE LoadClientModuleForSteam(LPCWSTR requestedPath, HANDLE hFile, DWORD flags) noexcept {
+    // Never hold the module mutex while waiting for the worker that creates the copy.
+    WaitForDiversionFileReady();
+
+    HMODULE loaded = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(s_clientLoadMutex);
+        HMODULE base = EnsureClientModuleLoadedLocked();
+        const bool useShadow = base && g_IsDiversionActive.load(std::memory_order_acquire) &&
+                               !s_wideDiversionPath.empty();
+        LPCWSTR loadPath = useShadow ? s_wideDiversionPath.c_str() : requestedPath;
+        loaded = CallOriginalLoadLibraryExW(loadPath, useShadow ? nullptr : hFile, flags);
+        if (!loaded && useShadow) {
+            DIV_LOG_WARN("Hooks_Diversion: per-request shadow load failed (error={}); retrying requested original path",
+                         ::GetLastError());
+            g_IsDiversionActive.store(false, std::memory_order_release);
+            loaded = CallOriginalLoadLibraryExW(requestedPath, hFile, flags);
+            if (loaded) client_hModule.store(
+                reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(loaded),
+                std::memory_order_release);
+        } else if (!loaded && !base) {
+            loaded = CallOriginalLoadLibraryExW(requestedPath, hFile, flags);
+            if (loaded) {
+                client_hModule.store(reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(loaded),
+                                     std::memory_order_release);
+                g_IsDiversionActive.store(false, std::memory_order_release);
+            }
+        }
+    }
+
+    // The barrier deliberately follows the load mutex to avoid serializing any
+    // module-load caller behind InitThread's hook installation.
+    if (loaded && !g_HooksInstalled.load(std::memory_order_acquire) && g_hClientHooksReadyEvent) {
+        ::WaitForSingleObject(g_hClientHooksReadyEvent, 2000);
+    }
+    return loaded;
+}
+
 HMODULE WINAPI Hooked_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
     if (lpLibFileName && IsSteamClientModuleW(lpLibFileName)) {
-        if (!s_wideDiversionPath.empty()) {
-            HMODULE hDiv = s_origLoadLibraryExW(s_wideDiversionPath.c_str(), hFile, dwFlags);
-            if (hDiv) {
-                auto expected = static_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(nullptr);
-                client_hModule.compare_exchange_strong(expected, reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(hDiv));
-                g_IsDiversionActive.store(true, std::memory_order_release);
-
-                // Startup Race Barrier: Wait for client hooks to be installed before
-                // steam.exe invokes exports on the returned module handle.
-                if (!g_HooksInstalled.load(std::memory_order_acquire) && g_hClientHooksReadyEvent) {
-                    ::WaitForSingleObject(g_hClientHooksReadyEvent, 2000);
-                }
-
-                DIV_LOG_INFO("Hooks_Diversion: Redirected LoadLibraryExW {} -> {}",
+        HMODULE client = LoadClientModuleForSteam(lpLibFileName, hFile, dwFlags);
+        if (client) {
+            DIV_LOG_INFO("Hooks_Diversion: redirected Steam client request {} -> {}",
                          OSTPlatform::Encoding::WideToUtf8(lpLibFileName),
-                         DiversionPath);
-                return hDiv;
-            }
-            DIV_LOG_ERROR("Hooks_Diversion: Failed to load diversion module from {}, falling back to original {}",
-                      DiversionPath, OSTPlatform::Encoding::WideToUtf8(lpLibFileName));
+                         g_IsDiversionActive.load(std::memory_order_acquire) ? DiversionPath : SteamclientPath);
+            return client;
         }
-
-        HMODULE hOrig = s_origLoadLibraryExW(lpLibFileName, hFile, dwFlags);
-        if (hOrig) {
-            auto expected = static_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(nullptr);
-            client_hModule.compare_exchange_strong(expected, reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(hOrig));
-            if (!g_HooksInstalled.load(std::memory_order_acquire) && g_hClientHooksReadyEvent) {
-                ::WaitForSingleObject(g_hClientHooksReadyEvent, 2000);
-            }
-        }
-        return hOrig;
+        DIV_LOG_ERROR("Hooks_Diversion: diversion and original client loads failed; returning loader failure");
+        return nullptr;
     }
-    return s_origLoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    return CallOriginalLoadLibraryExW(lpLibFileName, hFile, dwFlags);
 }
 
 HMODULE WINAPI Hooked_GetModuleHandleW(LPCWSTR lpModuleName) {
     if (lpModuleName && IsSteamClientModuleW(lpModuleName)) {
         auto h = client_hModule.load(std::memory_order_acquire);
+        if (h) return reinterpret_cast<HMODULE>(h);
+        h = reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(s_origGetModuleHandleW(lpModuleName));
         if (h) {
+            client_hModule.store(h, std::memory_order_release);
+            g_IsDiversionActive.store(false, std::memory_order_release);
             return reinterpret_cast<HMODULE>(h);
         }
     }
@@ -124,7 +222,11 @@ HMODULE WINAPI Hooked_GetModuleHandleW(LPCWSTR lpModuleName) {
 HMODULE WINAPI Hooked_GetModuleHandleA(LPCSTR lpModuleName) {
     if (lpModuleName && IsSteamClientModuleA(lpModuleName)) {
         auto h = client_hModule.load(std::memory_order_acquire);
+        if (h) return reinterpret_cast<HMODULE>(h);
+        h = reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(s_origGetModuleHandleA(lpModuleName));
         if (h) {
+            client_hModule.store(h, std::memory_order_release);
+            g_IsDiversionActive.store(false, std::memory_order_release);
             return reinterpret_cast<HMODULE>(h);
         }
     }
@@ -139,10 +241,13 @@ BOOL WINAPI Hooked_GetModuleHandleExW(DWORD dwFlags, LPCWSTR lpModuleName, HMODU
         if (h) {
             if (phModule) {
                 *phModule = reinterpret_cast<HMODULE>(h);
-                if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT) && !s_wideDiversionPath.empty()) {
+                if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)) {
                     HMODULE dummy = nullptr;
-                    s_origGetModuleHandleExW(dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN,
-                                             s_wideDiversionPath.c_str(), &dummy);
+                    LPCWSTR selectedPath = g_IsDiversionActive.load(std::memory_order_acquire)
+                        ? s_wideDiversionPath.c_str() : s_wideOriginalPath.c_str();
+                    if (selectedPath && *selectedPath)
+                        s_origGetModuleHandleExW(dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                                 selectedPath, &dummy);
                 }
                 return TRUE;
             }
@@ -161,10 +266,13 @@ BOOL WINAPI Hooked_GetModuleHandleExA(DWORD dwFlags, LPCSTR lpModuleName, HMODUL
         if (h) {
             if (phModule) {
                 *phModule = reinterpret_cast<HMODULE>(h);
-                if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT) && DiversionPath[0] != '\0') {
+                if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)) {
                     HMODULE dummy = nullptr;
-                    s_origGetModuleHandleExA(dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN,
-                                             DiversionPath, &dummy);
+                    LPCSTR selectedPath = g_IsDiversionActive.load(std::memory_order_acquire)
+                        ? DiversionPath : SteamclientPath;
+                    if (selectedPath && *selectedPath)
+                        s_origGetModuleHandleExA(dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                                 selectedPath, &dummy);
                 }
                 return TRUE;
             }
@@ -177,11 +285,37 @@ BOOL WINAPI Hooked_GetModuleHandleExA(DWORD dwFlags, LPCSTR lpModuleName, HMODUL
 
 } // namespace
 
+void ConfigurePaths(const std::wstring& originalPath, const std::wstring& diversionPath) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(s_pathMutex);
+        // Hooks read these immutable strings without acquiring a lock. Configure
+        // once before Install() publishes any detour, then keep them stable.
+        if (s_pathsConfigured) return;
+        if (originalPath.empty() || diversionPath.empty()) return;
+        s_wideOriginalPath = originalPath;
+        s_wideDiversionPath = diversionPath;
+        s_pathsConfigured = true;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(s_pathMutex);
+        s_wideOriginalPath.clear();
+        s_wideDiversionPath.clear();
+        s_pathsConfigured = false;
+        g_IsDiversionActive.store(false, std::memory_order_release);
+    }
+}
+
 bool EnsureDiversionFileReady(const std::wstring& originalPath, const std::wstring& diversionPath) noexcept {
+    auto signalReady = [](bool ready) {
+        g_IsDiversionActive.store(ready, std::memory_order_release);
+        s_diversionFileReady.store(true, std::memory_order_release);
+        if (g_hDiversionFileReadyEvent) ::SetEvent(g_hDiversionFileReadyEvent);
+    };
+
     if (originalPath.empty() || diversionPath.empty()) {
+        signalReady(false);
         return false;
     }
-    s_wideDiversionPath = diversionPath;
+    ConfigurePaths(originalPath, diversionPath);
 
     WIN32_FILE_ATTRIBUTE_DATA origAttr{}, divAttr{};
     const bool origExists = ::GetFileAttributesExW(originalPath.c_str(), GetFileExInfoStandard, &origAttr) != 0 &&
@@ -191,48 +325,90 @@ bool EnsureDiversionFileReady(const std::wstring& originalPath, const std::wstri
 
     if (!origExists) {
         DIV_LOG_WARN("Hooks_Diversion: Original steamclient64.dll not found at {}",
-                 OSTPlatform::Encoding::WideToUtf8(originalPath));
+                     OSTPlatform::Encoding::WideToUtf8(originalPath));
+        signalReady(false);
         return false;
     }
 
-    bool isUpToDate = false;
-    if (origExists && divExists) {
-        if ((origAttr.nFileSizeHigh != 0 || origAttr.nFileSizeLow != 0) &&
-            origAttr.nFileSizeHigh == divAttr.nFileSizeHigh &&
-            origAttr.nFileSizeLow  == divAttr.nFileSizeLow &&
-            origAttr.ftLastWriteTime.dwLowDateTime  == divAttr.ftLastWriteTime.dwLowDateTime &&
-            origAttr.ftLastWriteTime.dwHighDateTime == divAttr.ftLastWriteTime.dwHighDateTime)
-        {
-            isUpToDate = true;
-        }
-    }
+    const bool isUpToDate = divExists &&
+        (origAttr.nFileSizeHigh != 0 || origAttr.nFileSizeLow != 0) &&
+        origAttr.nFileSizeHigh == divAttr.nFileSizeHigh &&
+        origAttr.nFileSizeLow == divAttr.nFileSizeLow &&
+        origAttr.ftLastWriteTime.dwLowDateTime == divAttr.ftLastWriteTime.dwLowDateTime &&
+        origAttr.ftLastWriteTime.dwHighDateTime == divAttr.ftLastWriteTime.dwHighDateTime;
 
     if (isUpToDate) {
-        DIV_LOG_DEBUG("Hooks_Diversion: Diversion module is already up to date ({})", DiversionPath);
-        g_IsDiversionActive.store(true, std::memory_order_release);
+        DIV_LOG_DEBUG("Hooks_Diversion: shadow module is already up to date ({})", DiversionPath);
+        signalReady(true);
         return true;
     }
 
     try {
-        std::filesystem::path divFs(diversionPath);
+        const std::filesystem::path divFs(diversionPath);
         std::error_code ec;
         std::filesystem::create_directories(divFs.parent_path(), ec);
-        if (divExists && (divAttr.dwFileAttributes & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))) {
+        if (divExists && (divAttr.dwFileAttributes & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)))
             ::SetFileAttributesW(diversionPath.c_str(), FILE_ATTRIBUTE_NORMAL);
-        }
 
         if (::CopyFileW(originalPath.c_str(), diversionPath.c_str(), FALSE)) {
-            DIV_LOG_INFO("Hooks_Diversion: Cloned steamclient64.dll -> diversion64.dll");
-            g_IsDiversionActive.store(true, std::memory_order_release);
+            DIV_LOG_INFO("Hooks_Diversion: cloned steamclient64.dll -> diversion64.dll");
+            signalReady(true);
             return true;
         }
-        const DWORD gle = ::GetLastError();
-        DIV_LOG_ERROR("Hooks_Diversion: CopyFileW failed with error {}", gle);
+        DIV_LOG_ERROR("Hooks_Diversion: CopyFileW failed with error {}", ::GetLastError());
     } catch (...) {
-        DIV_LOG_ERROR("Hooks_Diversion: Exception during file clone");
+        DIV_LOG_ERROR("Hooks_Diversion: exception during shadow file preparation");
     }
 
+    signalReady(false);
     return false;
+}
+
+HMODULE EnsureClientModuleLoaded() noexcept {
+    WaitForDiversionFileReady();
+    std::lock_guard<std::mutex> lock(s_clientLoadMutex);
+    return EnsureClientModuleLoadedLocked();
+}
+
+HMODULE AcquireClientModuleReference() noexcept {
+    WaitForDiversionFileReady();
+    std::lock_guard<std::mutex> lock(s_clientLoadMutex);
+
+    HMODULE client = EnsureClientModuleLoadedLocked();
+    if (!client) return nullptr;
+
+    const bool useShadow = g_IsDiversionActive.load(std::memory_order_acquire) &&
+                           !s_wideDiversionPath.empty();
+    const std::wstring& selectedPath = useShadow ? s_wideDiversionPath : s_wideOriginalPath;
+    if (!selectedPath.empty()) {
+        HMODULE referenced = CallOriginalLoadLibraryExW(
+            selectedPath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (referenced == client) return referenced;
+        if (referenced) {
+            // A full path should resolve to the module selected above.  Do not
+            // return a different image to Steam if the loader state changed.
+            ::FreeLibrary(referenced);
+        }
+    }
+
+    // Keep ownership semantics even if reopening the path fails (for example,
+    // a concurrent Steam update replaced the file after the first mapping).
+    HMODULE referenced = nullptr;
+    auto getModuleHandleEx = s_origGetModuleHandleExW
+        ? s_origGetModuleHandleExW : ::GetModuleHandleExW;
+    if (getModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                          reinterpret_cast<LPCWSTR>(client), &referenced) &&
+        referenced == client) {
+        return referenced;
+    }
+    return nullptr;
+}
+
+HMODULE GetOriginalClientIfLoaded() noexcept {
+    // s_origGetModuleHandleW is the trampoline retained by Detours.  Calling
+    // it avoids the name redirection in Hooked_GetModuleHandleW and therefore
+    // reports only a module that the Windows loader actually mapped.
+    return GetAlreadyLoadedOriginalClient();
 }
 
 void Install() noexcept {
@@ -240,9 +416,10 @@ void Install() noexcept {
         return;
     }
 
-    if (!g_hClientHooksReadyEvent) {
+    if (!g_hClientHooksReadyEvent)
         g_hClientHooksReadyEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    }
+    if (!g_hDiversionFileReadyEvent)
+        g_hDiversionFileReadyEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
     HMODULE hModule = ::GetModuleHandleW(L"kernelbase.dll");
     if (!hModule) {
@@ -317,6 +494,10 @@ void Uninstall() noexcept {
             ::CloseHandle(g_hClientHooksReadyEvent);
             g_hClientHooksReadyEvent = nullptr;
         }
+        if (g_hDiversionFileReadyEvent) {
+            ::CloseHandle(g_hDiversionFileReadyEvent);
+            g_hDiversionFileReadyEvent = nullptr;
+        }
         return;
     }
 
@@ -353,9 +534,15 @@ void Uninstall() noexcept {
         s_getModuleHandleExAHooked.load(std::memory_order_acquire);
     s_isInstalled.store(stillAttached, std::memory_order_release);
 
-    if (!stillAttached && g_hClientHooksReadyEvent) {
-        ::CloseHandle(g_hClientHooksReadyEvent);
-        g_hClientHooksReadyEvent = nullptr;
+    if (!stillAttached) {
+        if (g_hClientHooksReadyEvent) {
+            ::CloseHandle(g_hClientHooksReadyEvent);
+            g_hClientHooksReadyEvent = nullptr;
+        }
+        if (g_hDiversionFileReadyEvent) {
+            ::CloseHandle(g_hDiversionFileReadyEvent);
+            g_hDiversionFileReadyEvent = nullptr;
+        }
     }
     DIV_LOG_INFO("Hooks_Diversion: Chokepoint detours unhooked cleanly");
 }

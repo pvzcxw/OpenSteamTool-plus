@@ -12,4 +12,7 @@ namespace Hooks_Package
     // Mark package 0 as changed and trigger CClientAppManager_ProcessPendingLicenseUpdates.
     void NotifyLicenseChanged();
 
+    bool IsSharedLicense(AppId_t appId);
+    bool HasValidLicense(AppId_t appId);
+
 }

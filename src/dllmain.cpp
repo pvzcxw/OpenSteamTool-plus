@@ -1,6 +1,7 @@
 #include "dllmain.h"
 #include "Hook/HookManager.h"
 #include "Hook/Hooks_Diversion.h"
+#include "Hook/Hooks_SteamUI.h"
 #include "Utils/Config/ConfigFileWatcher.h"
 #include "Utils/Config/LuaFileWatcher.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
@@ -12,18 +13,21 @@
 #include "OSTPlatform/include/Thread.h"
 
 #include <cstdio>
+#include <cwchar>
 #include <windows.h>
 
 // Resolve Steam paths before the client module is loaded so the diversion
 // hook can redirect Steam's first LoadLibraryExW call.
 static bool InitializeRuntimePaths()
 {
-    std::string steamPath = OSTPlatform::Encoding::WideToUtf8(
-        OSTPlatform::DynamicLibrary::GetModuleDirectory(nullptr).wstring());
-    if (steamPath.empty())
+    const std::filesystem::path exePath = OSTPlatform::DynamicLibrary::GetMainExecutablePath();
+    const std::wstring exeName = exePath.filename().wstring();
+    if (exePath.empty() || _wcsicmp(exeName.c_str(), L"steam.exe") != 0)
     {
-        steamPath = OSTPlatform::DynamicLibrary::GetCurrentDirectoryPath();
+        return false;
     }
+
+    std::string steamPath = OSTPlatform::Encoding::WideToUtf8(exePath.parent_path().wstring());
     while (steamPath.size() > 1 && (steamPath.back() == '\\' || steamPath.back() == '/') &&
            !(steamPath.size() == 3 && steamPath[1] == ':'))
     {
@@ -48,37 +52,8 @@ static bool InitializeRuntimePaths()
            configLen > 0 && static_cast<size_t>(configLen) < kRuntimePathCapacity;
 }
 
-// Adopt the diverted module when available; otherwise retain the original
-// steamclient64.dll loading path.
-bool InitializeSteamComponents()
+static bool InitializeSteamUI()
 {
-    auto client = client_hModule.load(std::memory_order_acquire);
-    if (!client && g_IsDiversionActive.load(std::memory_order_acquire))
-    {
-        auto loaded = OSTPlatform::DynamicLibrary::Load(std::filesystem::path(OSTPlatform::Encoding::Utf8ToWide(DiversionPath)));
-        if (loaded)
-        {
-            auto expected = static_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(nullptr);
-            client_hModule.compare_exchange_strong(expected, loaded, std::memory_order_acq_rel);
-            client = client_hModule.load(std::memory_order_acquire);
-            LOG_INFO("Loaded diversion module from {}", DiversionPath);
-        }
-    }
-    if (!client)
-    {
-        auto loaded = OSTPlatform::DynamicLibrary::Load(std::filesystem::path(OSTPlatform::Encoding::Utf8ToWide(SteamclientPath)));
-        if (!loaded)
-        {
-            LOG_ERROR("Load steamclient64.dll failed: {} (err={})",
-                      SteamclientPath, OSTPlatform::DynamicLibrary::GetLastErrorCode());
-            return false;
-        }
-        auto expected = static_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(nullptr);
-        client_hModule.compare_exchange_strong(expected, loaded, std::memory_order_acq_rel);
-        client = client_hModule.load(std::memory_order_acquire);
-        LOG_INFO("Loaded steamclient64.dll from {}", SteamclientPath);
-    }
-
     auto ui = ui_hModule.load(std::memory_order_acquire);
     if (!ui)
     {
@@ -93,6 +68,29 @@ bool InitializeSteamComponents()
     return true;
 }
 
+static bool InitializeSteamClient()
+{
+    HMODULE client = Hooks_Diversion::EnsureClientModuleLoaded();
+    if (!client)
+    {
+        LOG_ERROR("Load steamclient64.dll failed: {} (err={})",
+                  SteamclientPath, OSTPlatform::DynamicLibrary::GetLastErrorCode());
+        return false;
+    }
+    client_hModule.store(reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(client),
+                         std::memory_order_release);
+
+    if (g_IsDiversionActive.load(std::memory_order_acquire))
+    {
+        LOG_INFO("Loaded diversion steamclient64.dll from {}", DiversionPath);
+    }
+    else
+    {
+        LOG_WARN("Using original steamclient64.dll fallback from {}", SteamclientPath);
+    }
+    return true;
+}
+
 // All initialisation that touches the filesystem, loads modules, scans
 // memory, or installs detours runs here on a worker thread — we MUST NOT do
 // any of that from inside DllMain (loader lock).
@@ -101,9 +99,35 @@ static uint32_t InitThread(OSTPlatform::DynamicLibrary::ModuleHandle selfModule)
     Log::Init(selfModule);
     LOG_INFO("OpenSteamTool init thread started");
 
-    if (!InitializeSteamComponents())
+    // Keep file I/O off DllMain's loader lock. The early loader detour blocks
+    // on this readiness event until the copy has been checked or failed.
+    if (!Hooks_Diversion::EnsureDiversionFileReady(
+            OSTPlatform::Encoding::Utf8ToWide(SteamclientPath),
+            OSTPlatform::Encoding::Utf8ToWide(DiversionPath)))
     {
-        LOG_ERROR("InitializeSteamComponents failed");
+        LOG_WARN("Diversion copy unavailable; continuing with original steamclient fallback");
+    }
+
+    if (!InitializeSteamUI())
+    {
+        LOG_ERROR("InitializeSteamUI failed");
+        return 1;
+    }
+
+    // This local .text signature scan is deliberately ahead of PatternLoader's
+    // remote fetches so Steam's first client request cannot outrun the hook.
+    if (!SteamUI::CoreLoaderHook())
+    {
+        LOG_WARN("SteamUI LoadModuleWithPath hook unavailable; retaining the system-loader fallback");
+    }
+
+    if (Hooks_Diversion::GetOriginalClientIfLoaded())
+    {
+        LOG_WARN("steamclient64.dll was already mapped before diversion adoption; selecting original fallback");
+    }
+    if (!InitializeSteamClient())
+    {
+        LOG_ERROR("InitializeSteamClient failed");
         return 1;
     }
 
@@ -156,11 +180,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
         DisableThreadLibraryCalls(hModule);
         auto selfModule = reinterpret_cast<OSTPlatform::DynamicLibrary::ModuleHandle>(hModule);
 
-        // The paths and shadow client must be ready before Steam's first
-        // steamclient64.dll load; the detour itself is installed synchronously.
+        // Only resolve paths and install loader detours here; the shadow-copy
+        // check and module loads run on InitThread outside the loader lock.
         if (InitializeRuntimePaths())
         {
-            Hooks_Diversion::EnsureDiversionFileReady(
+            Hooks_Diversion::ConfigurePaths(
                 OSTPlatform::Encoding::Utf8ToWide(SteamclientPath),
                 OSTPlatform::Encoding::Utf8ToWide(DiversionPath));
             Hooks_Diversion::Install();

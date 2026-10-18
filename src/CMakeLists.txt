@@ -132,10 +132,7 @@ add_library(OpenSteamTool SHARED
     Hook/HookManager.cpp
     Hook/Hooks_CallBack.cpp
     Hook/Hooks_Decryption.cpp
-<<<<<<< HEAD
     Hook/Hooks_Diversion.cpp
-=======
->>>>>>> 2a08b0bfdc96c9e3f75df20f3f37bc8d8c09ee3a
     Hook/Hooks_IPC.cpp
     Hook/Hooks_IPC_ISteamUser.cpp
     Hook/Hooks_IPC_ISteamUtils.cpp

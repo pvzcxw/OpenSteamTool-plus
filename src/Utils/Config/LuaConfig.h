@@ -12,6 +12,12 @@ namespace LuaConfig{
     bool HasDepot(AppId_t appId, bool checkOwned=true);
     bool IsOwned(AppId_t appId);
     void MarkOwned(AppId_t appId);
+    bool IsDAuth2(AppId_t appId);
+    void SetCmdLineDAuth2(AppId_t appId, bool active);
+    bool IsNoDenuvo(AppId_t appId);
+    void SetCmdLineNoDenuvo(AppId_t appId, bool active);
+    bool IsForcedDenuvo(AppId_t appId);
+    void SetCmdLineForcedDenuvo(AppId_t appId, bool active);
     std::vector<AppId_t> GetAllDepotIds();
     std::vector<uint8> GetDecryptionKey(AppId_t appId);
     uint64_t GetAccessToken(AppId_t appId);

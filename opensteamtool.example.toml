@@ -9,12 +9,20 @@ level = "debug"
 
 [manifest]
 # Which upstream API to query for depot manifest request codes.
-#   "opensteamtool" → https://manifest.opensteamtool.com/{gid}   (default)
-#   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (recommended for China users)
+#   "20770407"      → https://20770407.xyz/manifest/{depotId}/{gid} (default)
+#   "SDM"           → https://steamapi.993499094.xyz/manifest/{depotId}/{gid}
+#   "manifestdex"   → https://manifest.manifestdex.com/{gid} (User-Agent sent automatically)
+#   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid}
 #   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}
+#   "opensteamtool" → https://manifest.opensteamtool.com/{gid}
 # If <Steam>/config/lua/manifest.lua defines fetch_manifest_code(gid) or
 # fetch_manifest_code_ex(app_id, depot_id, gid), those Lua functions take
 # priority over the url setting below.
+#
+# url selects the preferred API. When failover is enabled, remaining APIs
+# are tried in table order after failure; failed APIs cool down for 60 seconds.
+url = "20770407"
+failover = true
 #
 # --- manifest.lua reference ---
 # The C++ side provides http_get(url [, headers]) and
@@ -44,9 +52,8 @@ level = "debug"
 #     end
 #     return nil
 # end
-url = "opensteamtool"
-
 # HTTP timeouts for manifest requests (milliseconds).
+# Values are clamped to [1, 15000]; failover attempts share a 15000 ms budget.
 # timeout_resolve_ms  — DNS resolution        (default: 5000)
 # timeout_connect_ms  — TCP handshake          (default: 5000)
 # timeout_send_ms     — request transmission   (default: 10000)
@@ -93,9 +100,15 @@ enabled = false
 # library = "cloud_redirect.dll"
 
 [remote]
-# Optional metadata mirror. Leave unset to use GitHub with jsDelivr fallback.
+# Optional metadata mirror. Leave unset to use hazre/steam-monitor via
+# gh-proxy with GitHub raw fallback.
 # A custom mirror replaces the built-in remote sources and must include all
 # three placeholders: {channel}, {component}, and {sha256}.
 #
+# Built-in mirror order (default: gh-proxy-first):
+#   "gh-proxy-first" → gh-proxy first, then GitHub raw
+#   "github-first"   → GitHub raw first, then gh-proxy
+# order = "gh-proxy-first"
+#
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
-# url_template = "https://fast.jsdelivr.net/gh/OpenSteam001/steam-monitor@{channel}/{component}/{sha256}.toml"
+# url_template = "https://gh-proxy.com/https://raw.githubusercontent.com/hazre/steam-monitor/main/{channel}/{component}/{sha256}.toml"

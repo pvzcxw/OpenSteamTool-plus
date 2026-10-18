@@ -4,6 +4,9 @@
 #include "dllmain.h"
 
 namespace SteamUI {
+    // Installs the loader chokepoint using the built-in SteamUI signature.
+    // This must run before PatternLoader performs any remote I/O.
+    bool CoreLoaderHook();
     void CoreHook();
     void CoreUnhook();
 }
