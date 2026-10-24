@@ -80,7 +80,7 @@
      appticket(184 bytes):14000000...
      eticket(143 bytes):...
      ```
-   无法获取的令牌报告为 `appticket:null` / `eticket:null`
+     无法获取的令牌报告为 `appticket:null` / `eticket:null`
 4. 将 `tickets.txt` 中的十六进制字符串粘贴到你的 Lua 配置中：
    ```lua
    setAppTicket(1361510, "14000000...")
@@ -165,18 +165,18 @@ level = "debug"
 #
 # -- 示例：尝试使用 wudrm（纯文本 uint64），如果失败则回退到 steamrun（JSON）。
 # -- 返回一个数字字符串，以避免双精度损失超过 2^53。
-function fetch_manifest_code(gid)
-    -- wudrm 回应例如 "10570517747114638659"
-    local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
-    if st == 200 and body then return body end
-    -- steamrun 回应 {"content":"1666836470726104466"}
-    body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
-    if st == 200 and body then
-        local code = body:match('"content":"(%d+)"')
-        if code then return code end
-    end
-    return nil
-end
+# function fetch_manifest_code(gid)
+#    -- wudrm 回应例如 "10570517747114638659"
+#    local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
+#    if st == 200 and body then return body end
+#    -- steamrun 回应 {"content":"1666836470726104466"}
+#    body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
+#    if st == 200 and body then
+#        local code = body:match('"content":"(%d+)"')
+#        if code then return code end
+#    end
+#    return nil
+# end
 #
 # -- 带 app_id 和 depot_id 的扩展版本：
 # function fetch_manifest_code_ex(app_id, depot_id, gid)

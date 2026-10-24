@@ -74,8 +74,8 @@ La herramienta `extract_tickets` vuelca las cadenas hexadecimales de `AppTicket`
      appticket(184 bytes):14000000...
      eticket(143 bytes):...
      ```
-   Si un ticket no se puede obtener, se reportará como
-   `appticket:null` / `eticket:null`.
+     Si un ticket no se puede obtener, se reportará como
+     `appticket:null` / `eticket:null`.
 4. Pega las cadenas hexadecimales de `tickets.txt` en tu configuración de Lua:
    ```lua
    setAppTicket(1361510, "14000000...")
@@ -137,8 +137,8 @@ El archivo se supervisa mientras Steam está en ejecución; los cambios válidos
 # Este archivo se carga al iniciar y se recarga automáticamente en caliente tras modificaciones.
 
 [log]
-Nivel de detalle de todos los archivos de registro (solo aplicable a la compilación de depuración).  
-Valores opcionales: trace, debug, info, warn, error
+# Nivel de detalle de todos los archivos de registro (solo aplicable a la compilación de depuración).  
+# Valores opcionales: trace, debug, info, warn, error
 level = "debug"
 
 [manifest]
@@ -149,8 +149,8 @@ level = "debug"
 #   "opensteamtool" → https://manifest.opensteamtool.com/{gid} (por defecto)  
 #   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (recomendado para usuarios chinos)
 #   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}
-Si en <Steam>/config/lua/manifest.lua se define fetch_manifest_code(gid) o
-fetch_manifest_code_ex(app_id, depot_id, gid), estas funciones Lua tendrán prioridad sobre la configuración de URL que se indica a continuación.
+# Si en <Steam>/config/lua/manifest.lua se define fetch_manifest_code(gid) o
+# fetch_manifest_code_ex(app_id, depot_id, gid), estas funciones Lua tendrán prioridad sobre la configuración de URL que se indica a continuación.
 #
 # --- manifest.lua referencia ---
 # El lado C++ proporciona a los scripts Lua las funciones http_get(url, [headers]) y
@@ -158,18 +158,18 @@ fetch_manifest_code_ex(app_id, depot_id, gid), estas funciones Lua tendrán prio
 #
 # -- Ejemplo: intenta usar wudrm (texto puro uint64), si falla retrocede a steamrun (JSON).  
 # -- Devuelve una cadena de números para evitar pérdidas de precisión en doble precisión superiores a 2^53.
-function fetch_manifest_code(gid)
--- wudrm responde por ejemplo "10570517747114638659"
-local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
-if st == 200 and body then return body end
--- steamrun responde {"contenido":"1666836470726104466"}
-body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
-if st == 200 and body then
-local code = body:match('"content":"(%d+)"')
-if code then return code end
-end
-return nil
-end
+# function fetch_manifest_code(gid)
+#     -- wudrm responds with e.g. "10570517747114638659"
+#     local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
+#     if st == 200 and body then return body end
+#     -- steamrun responds with {"content":"1666836470726104466"}
+#     body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
+#     if st == 200 and body then
+#         local code = body:match('"content":"(%d+)"')
+#         if code then return code end
+#     end
+#     return nil
+# end
 #
 # -- Versión extendida con app_id y depot_id:
 # function fetch_manifest_code_ex(app_id, depot_id, gid)
