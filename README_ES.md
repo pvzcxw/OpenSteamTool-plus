@@ -93,6 +93,9 @@ La herramienta `extract_tickets` vuelca las cadenas hexadecimales de `AppTicket`
 ### Online Fix(Reparacion para habilitar el Online)
 - Añade `-onlinefix` a los parámetros de lanzamiento de Steam para habilitar el juego en línea basado en el AppId 480 en juegos que utilizan emparejamiento (matchmaking) por salas (lobbies). La limitación actual es que solo se puede ejecutar uno de estos juegos a la vez. Para revertirlo, simplemente elimina -onlinefix de los parámetros de lanzamiento; el juego en línea volverá a la normalidad en el próximo inicio.
 
+## Qué ha hecho este fork?
+Este fork corrige muchos pequeños problemas, incluyendo patterns y manifestos, así como correcciones de denuvo.
+
 ## Futuro
 - Soporte para la sincronización con Steam Cloud (este es un proyecto enorme).
 
@@ -129,41 +132,102 @@ Si no se encuentra ningún archivo de configuración, se utilizarán los valores
 El archivo se supervisa mientras Steam está en ejecución; los cambios válidos se recargan en caliente sin reiniciar Steam.
 
 ```toml
+# opensteamtool.toml — Archivo de configuración de OpenSteamTool  
+# Ubicación de almacenamiento: <Steam>/opensteamtool.toml  
+# Este archivo se carga al iniciar y se recarga automáticamente en caliente tras modificaciones.
+
 [log]
-# Solo para compilaciones de depuración (Debug). Niveles: trace, debug, info, warn, error
-level = "info"
+Nivel de detalle de todos los archivos de registro (solo aplicable a la compilación de depuración).  
+Valores opcionales: trace, debug, info, warn, error
+level = "debug"
 
 [manifest]
-# API ascendente para los códigos de solicitud de manifiestos de depósito. Opciones: "opensteamtool", "steamrun", "wudrm"
+# Consultar la API superior utilizada por el código de solicitud de lista de almacén.
+#   "20770407"     → https://20770407.xyz/manifest/{depotId}/{gid}
+#   "SDM"          → https://steamapi.993499094.xyz/manifest/{depotId}/{gid}
+#   "manifestdex" → https://manifest.manifestdex.com/{gid} (el agente de usuario ManifestDeX se añadirá automáticamente)  
+#   "opensteamtool" → https://manifest.opensteamtool.com/{gid} (por defecto)  
+#   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (recomendado para usuarios chinos)
+#   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}
+Si en <Steam>/config/lua/manifest.lua se define fetch_manifest_code(gid) o
+fetch_manifest_code_ex(app_id, depot_id, gid), estas funciones Lua tendrán prioridad sobre la configuración de URL que se indica a continuación.
+#
+# --- manifest.lua referencia ---
+# El lado C++ proporciona a los scripts Lua las funciones http_get(url, [headers]) y
+# http_post(url, body, [headers]). Ambas devuelven (body_string, status_code) en caso de éxito, y (nil, error_msg) en caso de fallo.
+#
+# -- Ejemplo: intenta usar wudrm (texto puro uint64), si falla retrocede a steamrun (JSON).  
+# -- Devuelve una cadena de números para evitar pérdidas de precisión en doble precisión superiores a 2^53.
+function fetch_manifest_code(gid)
+-- wudrm responde por ejemplo "10570517747114638659"
+local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
+if st == 200 and body then return body end
+-- steamrun responde {"contenido":"1666836470726104466"}
+body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
+if st == 200 and body then
+local code = body:match('"content":"(%d+)"')
+if code then return code end
+end
+return nil
+end
+#
+# -- Versión extendida con app_id y depot_id:
+# function fetch_manifest_code_ex(app_id, depot_id, gid)
+#     local body, st = http_get("https://your-api.com/manifest-code/" .. app_id .. "/" .. gid)
+#     if st == 200 and body and body:match("^%d+$") then
+#         return body
+#     end
+#     return nil
+# end
 url = "opensteamtool"
 
-# Tiempos de espera HTTP (timeouts) para las solicitudes de manifiestos (en milisegundos)
+# manifest Tiempo de espera HTTP solicitado (milisegundos).  
+# timeout_resolve_ms — Resolución DNS        (por defecto: 5000)  
+# timeout_connect_ms — Gestión TCP          (por defecto: 5000)  
+# timeout_send_ms     — Transmisión de solicitud         (por defecto: 10000)  
+# timeout_recv_ms     — Descarga del cuerpo de respuesta         (por defecto: 10000)
 timeout_resolve_ms = 5000
 timeout_connect_ms = 5000
 timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
 
 [stats]
-# Consulta https://stats.opensteamtool.com/{appid} cuando no existe setStat en Lua.
-# Prioridad: setStat > API de estadísticas > SteamID predefinido.
+# Cuando no se ha configurado la función Lua setStat(appid, "steamid"), se consulta automáticamente https://stats.opensteamtool.com/{appid} para obtener el SteamID recomendado.  
+# Prioridad: cuando está activada y funcional, setStat > API de estadísticas > SteamID predeterminado fijo.
 enable_api = true
 
-# Directorios adicionales de configuración de Lua (opcional).
-# Los archivos se cargan después de la carpeta predeterminada <Steam>/config/lua.
-# La carpeta predeterminada siempre se carga al final para que los archivos del usuario tengan prioridad.
+# Directorio de configuración adicional de Lua (opcional).  
+# Los archivos se cargarán después de la carpeta predeterminada <Steam>/config/lua.  
+# La carpeta predeterminada siempre se carga por último, por lo que los archivos personalizados del usuario tienen prioridad.  
+# Ejemplo: cargar un directorio personalizado en otro disco:
+#   [lua]
+#   paths = ["D:/my-steam-config/lua"]
 [lua]
-paths = []
+# paths = []
 
 [inject]
-# Inyección opcional de bibliotecas en procesos de juego.
-# La biblioteca inyectada debe coincidir con la arquitectura del proceso de destino.
+# Inyección opcional de bibliotecas en el proceso del juego.  
+# Las bibliotecas inyectadas deben coincidir con la arquitectura del proceso objetivo.
 enabled = false
 # library_x64 = "OpenSteamTool.GameHook.x64.dll"
 # library_x86 = "OpenSteamTool.GameHook.x86.dll"
 
-# Espejo (mirror) de metadatos opcional. Consulta "Compatibilidad con versiones de Steam" más abajo.
+[cloud]
+# Función opcional de redirección de almacenamiento en la nube Steam, compatible con juegos no bloqueados ("lua"), proporcionada por CloudRedirect (https://github.com/Selectively11/CloudRedirect).  
+# Una vez activada, OpenSteamTool carga cloud_redirect.dll dentro de Steam, registrando cada juego añadido mediante addappid() como una aplicación de redirección y enrutando las solicitudes RPC de nube Steam a través del motor de almacenamiento en la nube de CloudRedirect.
+#
+# Inicio de sesión del proveedor (Google Drive / OneDrive / carpeta local) aún debe pasar por la aplicación complementaria integrada de CloudRedirect; OpenSteamTool solo aloja DLL.
+enabled = false
+# La ruta de cloud_redirect.dll. Puede ser una ruta absoluta o relativa al directorio raíz de Steam.
+# Si no se especifica, el valor predeterminado es "<Steam>/cloud_redirect.dll".
+# library = "cloud_redirect.dll"
+
 [remote]
-# url_template = "https://tu.servidor/{channel}/{component}/{sha256}.toml"
+# Imagen de metadatos opcional. Si no se especifica, se utilizará GitHub y jsDelivr como alternativa de respaldo.
+# La imagen personalizada reemplazará la fuente remota predeterminada y debe incluir tres marcadores de posición: {channel}, {component} y {sha256}.
+#
+# url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
+# url_template = "https://fast.jsdelivr.net/gh/OpenSteam001/steam-monitor@{channel}/{component}/{sha256}.toml"
 ```
 ### Manifiest a través de Lua
 

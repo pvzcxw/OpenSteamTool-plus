@@ -98,6 +98,9 @@
 ### 在线修复
 - 在 Steam 启动参数中添加 `-onlinefix` 以在需要使用大厅匹配的游戏里启用基于 480 的在线游戏。当前限制是同一时间只能运行一个这样的游戏。要撤销，只需从启动参数中移除 `-onlinefix` — 下次启动时在线游戏恢复正常
 
+## 这个fork做了啥？
+这个fork修复了许许多多的小问题，包括patterns和manifest，denuvo的修复
+
 ## 未来计划
 - Steam 云同步支持。（这是个超级大工程）
 
@@ -136,41 +139,103 @@ setStat(1361510, "76561197960287930") -- 使用指定 SteamID 的成就数据用
 文件在 Steam 运行时被监视；有效更改会热重载，无需重启 Steam。
 
 ```toml
+# opensteamtool.toml — OpenSteamTool 配置文件
+# 存储位置：<Steam>/opensteamtool.toml
+# 该文件在启动时加载，并在修改后自动热重载。
+
 [log]
-# 仅调试构建。级别：trace、debug、info、warn、error
-level = "info"
+# 所有日志文件的详细程度（仅适用于调试构建）。
+# 可选值：trace, debug, info, warn, error
+level = "debug"
 
 [manifest]
-# 仓库 manifest 请求码的上游 API。选项："opensteamtool"、"steamrun"、"wudrm"
+# 查询仓库清单请求代码所使用的上游 API。
+#   "20770407"     → https://20770407.xyz/manifest/{depotId}/{gid}
+#   "SDM"          → https://steamapi.993499094.xyz/manifest/{depotId}/{gid}
+#   "manifestdex"  → https://manifest.manifestdex.com/{gid} （ManifestDeX 用户代理将自动添加）
+#   "opensteamtool" → https://manifest.opensteamtool.com/{gid} （默认）
+#   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} （推荐用于中国用户）
+#   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}
+# 如果 <Steam>/config/lua/manifest.lua 中定义了 fetch_manifest_code(gid) 或
+# fetch_manifest_code_ex(app_id, depot_id, gid)，则这些 Lua 函数将优先于下方的 URL 设置。
+#
+# --- manifest.lua 参考 ---
+# C++ 端为 Lua 脚本提供了 http_get(url, [headers]) 和
+# http_post(url, body, [headers])。两者在成功时返回 (body_string, status_code)，失败时返回 (nil, error_msg)。
+#
+# -- 示例：尝试使用 wudrm（纯文本 uint64），如果失败则回退到 steamrun（JSON）。
+# -- 返回一个数字字符串，以避免双精度损失超过 2^53。
+function fetch_manifest_code(gid)
+    -- wudrm 回应例如 "10570517747114638659"
+    local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
+    if st == 200 and body then return body end
+    -- steamrun 回应 {"content":"1666836470726104466"}
+    body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
+    if st == 200 and body then
+        local code = body:match('"content":"(%d+)"')
+        if code then return code end
+    end
+    return nil
+end
+#
+# -- 带 app_id 和 depot_id 的扩展版本：
+# function fetch_manifest_code_ex(app_id, depot_id, gid)
+#     local body, st = http_get("https://your-api.com/manifest-code/" .. app_id .. "/" .. gid)
+#     if st == 200 and body and body:match("^%d+$") then
+#         return body
+#     end
+#     return nil
+# end
 url = "opensteamtool"
 
-# manifest 请求的 HTTP 超时（毫秒）
+# manifest 请求的 HTTP 超时时间（毫秒）。
+# timeout_resolve_ms — DNS 解析        （默认：5000）
+# timeout_connect_ms — TCP 握手          （默认：5000）
+# timeout_send_ms     — 请求传输         （默认：10000）
+# timeout_recv_ms     — 响应体下载         （默认：10000）
 timeout_resolve_ms = 5000
 timeout_connect_ms = 5000
 timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
 
 [stats]
-# 当没有 Lua setStat 覆盖时查询 https://stats.opensteamtool.com/{appid}
-# 优先级：setStat > stats API > 硬编码预设 SteamID
+# 当未设置 Lua 函数 setStat(appid, "steamid") 时，自动查询 https://stats.opensteamtool.com/{appid} 获取推荐的 SteamID。
+# 优先级：启用且有效时，setStat > stats API > 固定预设 SteamID。
 enable_api = true
 
-# 额外的 Lua 配置目录（可选）
-# 文件在默认 <Steam>/config/lua 文件夹之后加载
-# 默认文件夹总是最后加载，因此用户文件优先级更高
+# 额外的 Lua 配置目录（可选）。
+# 文件将在默认的 <Steam>/config/lua 文件夹之后加载。
+# 默认文件夹始终最后加载，因此用户自定义文件具有优先权。
+# 示例 — 加载另一个驱动器上的自定义目录：
+#   [lua]
+#   paths = ["D:/my-steam-config/lua"]
 [lua]
-paths = []
+# paths = []
 
 [inject]
-# 可选的游戏进程库注入
-# 注入的库必须与目标进程架构匹配
+# 可选的库注入到游戏进程中。
+# 注入的库必须与目标进程架构匹配。
 enabled = false
 # library_x64 = "OpenSteamTool.GameHook.x64.dll"
 # library_x86 = "OpenSteamTool.GameHook.x86.dll"
 
-# 可选元数据镜像。参见下面的"Steam 版本兼容性"
+[cloud]
+# 可选的 Steam 云保存重定向功能，适用于未锁定（"lua"）的游戏，由 CloudRedirect（https://github.com/Selectively11/CloudRedirect）提供支持。
+# 启用后，OpenSteamTool 会在 Steam 内加载 cloud_redirect.dll，将每个 addappid() 游戏注册为重定向应用，并通过 CloudRedirect 的云保存引擎路由其 Steam 云 RPC 请求。
+#
+# 提供商登录（Google Drive / OneDrive / 本地文件夹）仍需通过
+# CloudRedirect 自带的配套应用程序进行——OpenSteamTool 仅托管 DLL。
+enabled = false
+# cloud_redirect.dll 的路径。可为绝对路径，也可相对于 Steam 根目录。
+# 若未设置，默认为 "<Steam>/cloud_redirect.dll"。
+# library = "cloud_redirect.dll"
+
 [remote]
+# 可选的元数据镜像。若不设置，则使用 GitHub 并采用 jsDelivr 作为后备方案。
+# 自定义镜像将替换内置的远程源，且必须包含三个占位符：{channel}、{component} 和 {sha256}。
+#
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
+# url_template = "https://fast.jsdelivr.net/gh/OpenSteam001/steam-monitor@{channel}/{component}/{sha256}.toml"
 ```
 
 ### 通过 Lua 获取 Manifest

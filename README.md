@@ -80,7 +80,7 @@ The `extract_tickets` tool dumps the `AppTicket` and `ETicket` hex strings you n
      appticket(184 bytes):14000000...
      eticket(143 bytes):...
      ```
-   A ticket that could not be obtained is reported as `appticket:null` / `eticket:null`.
+     A ticket that could not be obtained is reported as `appticket:null` / `eticket:null`.
 4. Paste the hex strings from `tickets.txt` into your Lua config:
    ```lua
    setAppTicket(1361510, "14000000...")
@@ -97,6 +97,9 @@ The `extract_tickets` tool dumps the `AppTicket` and `ETicket` hex strings you n
 
 ### Online Fix
 - Add `-onlinefix` to the Steam launch parameters to enable 480-based online play in games that use lobby matchmaking. The current limitation is that only one such game can run at a time.To revert, simply remove -onlinefix from the launch parameters — online play returns to normal on the next launch.
+
+## What did the fork do?
+This fork has fixed numerous minor issues, including patterns and manifests, as well as the fixes of Denuvo.
 
 ## Future
 - Steam Cloud synchronization support.(This is a huge project)
@@ -169,7 +172,110 @@ enabled = false
 
 # Optional metadata mirror. See "Steam version compatibility" below.
 [remote]
+# url_template = "https://your.server/{channel}/{component}/{sha256}.toml"# opensteamtool.toml — OpenSteamTool configuration
+# Place at: <Steam>/opensteamtool.toml
+# This file is loaded at startup and hot-reloaded after changes.
+
+[log]
+# Log verbosity for all log files (Debug build only).
+# Valid: trace, debug, info, warn, error
+level = "debug"
+
+[manifest]
+# Which upstream API to query for depot manifest request codes.
+#   "20770407"     → https://20770407.xyz/manifest/{depotId}/{gid}
+#   "SDM"          → https://steamapi.993499094.xyz/manifest/{depotId}/{gid}
+#   "manifestdex"  → https://manifest.manifestdex.com/{gid} (ManifestDeX user agent is added automatically)
+#   "opensteamtool" → https://manifest.opensteamtool.com/{gid}   (default)
+#   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (recommended for China users)
+#   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}
+# If <Steam>/config/lua/manifest.lua defines fetch_manifest_code(gid) or
+# fetch_manifest_code_ex(app_id, depot_id, gid), those Lua functions take
+# priority over the url setting below.
+#
+# --- manifest.lua reference ---
+# The C++ side provides http_get(url [, headers]) and
+# http_post(url, body [, headers]) to Lua scripts.  Both return
+# (body_string, status_code) on success, or (nil, error_msg) on failure.
+#
+# -- Example: try wudrm (plain-text uint64), fall back to steamrun (JSON).
+# -- Return a digit *string* to avoid double-precision loss > 2^53.
+# function fetch_manifest_code(gid)
+#     -- wudrm responds with e.g. "10570517747114638659"
+#     local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
+#     if st == 200 and body then return body end
+#     -- steamrun responds with {"content":"1666836470726104466"}
+#     body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
+#     if st == 200 and body then
+#         local code = body:match('"content":"(%d+)"')
+#         if code then return code end
+#     end
+#     return nil
+# end
+#
+# -- Extended variant with app_id and depot_id:
+# function fetch_manifest_code_ex(app_id, depot_id, gid)
+#     local body, st = http_get("https://your-api.com/manifest-code/" .. app_id .. "/" .. gid)
+#     if st == 200 and body and body:match("^%d+$") then
+#         return body
+#     end
+#     return nil
+# end
+url = "opensteamtool"
+
+# HTTP timeouts for manifest requests (milliseconds).
+# timeout_resolve_ms  — DNS resolution        (default: 5000)
+# timeout_connect_ms  — TCP handshake          (default: 5000)
+# timeout_send_ms     — request transmission   (default: 10000)
+# timeout_recv_ms     — response body download (default: 10000)
+timeout_resolve_ms = 5000
+timeout_connect_ms = 5000
+timeout_send_ms    = 10000
+timeout_recv_ms    = 10000
+
+[stats]
+# Automatically query https://stats.opensteamtool.com/{appid} for a recommended
+# SteamID when no Lua setStat(appid, "steamid") override exists.
+# Priority: setStat > stats API when enabled and valid > hardcoded preset SteamID.
+enable_api = true
+
+# Additional Lua config directories (optional).
+# Files are loaded after the default <Steam>/config/lua folder.
+# The default folder is always loaded last so user files take priority.
+# Example — load a custom directory on another drive:
+#   [lua]
+#   paths = ["D:/my-steam-config/lua"]
+[lua]
+# paths = []
+
+[inject]
+# Optional library injection into game processes.
+# The injected library must match the target process architecture.
+enabled = false
+# library_x64 = "OpenSteamTool.GameHook.x64.dll"
+# library_x86 = "OpenSteamTool.GameHook.x86.dll"
+
+[cloud]
+# Optional Steam Cloud save redirection for unlocked ("lua") games, powered by
+# CloudRedirect (https://github.com/Selectively11/CloudRedirect).
+# When enabled, OpenSteamTool loads cloud_redirect.dll inside Steam, registers
+# every addappid() game as a redirected app, and routes their Steam Cloud RPCs
+# through CloudRedirect's cloud-save engine.
+#
+# Provider sign-in (Google Drive / OneDrive / local folder) is still done through
+# CloudRedirect's own companion app — OpenSteamTool only hosts the DLL.
+enabled = false
+# Path to cloud_redirect.dll. Absolute, or relative to the Steam root directory.
+# Defaults to "<Steam>/cloud_redirect.dll" when unset.
+# library = "cloud_redirect.dll"
+
+[remote]
+# Optional metadata mirror. Leave unset to use GitHub with jsDelivr fallback.
+# A custom mirror replaces the built-in remote sources and must include all
+# three placeholders: {channel}, {component}, and {sha256}.
+#
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
+# url_template = "https://fast.jsdelivr.net/gh/OpenSteam001/steam-monitor@{channel}/{component}/{sha256}.toml"
 ```
 
 ### Manifest via Lua
