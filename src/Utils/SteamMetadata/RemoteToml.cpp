@@ -16,13 +16,11 @@ namespace RemoteToml
     namespace
     {
         constexpr const char *kGithubTemplate =
-            "https://raw.githubusercontent.com/hazre/steam-monitor/"
             "https://raw.githubusercontent.com/huanyuejue/steam-monitor/"
             "main/{channel}/{component}/{sha256}.toml";
         // gh-proxy 套在 raw 直连外面：对大仓库的 raw 文件比 jsDelivr 稳定，
         // 失败才回退 GitHub 直连保底。
         constexpr const char *kGhProxyTemplate =
-            "https://gh-proxy.com/https://raw.githubusercontent.com/hazre/steam-monitor/"
             "https://gh-proxy.com/https://raw.githubusercontent.com/huanyuejue/steam-monitor/"
             "main/{channel}/{component}/{sha256}.toml";
 

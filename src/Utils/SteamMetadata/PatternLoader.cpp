@@ -158,9 +158,7 @@ static void ShowDownloadFailedPopup(const std::string& dllName,
         "  2. Drop a matching TOML at:\n"
         "       <Steam>\\opensteamtool\\pattern\\" + component + "\\" + sha256 + ".toml\n"
         "  3. Check upstream:\n"
-        "       https://github.com/OpenSteam001/steam-monitor/tree/pattern/" + component + "\n"
-        "  4. Report the diagnostics below:\n"
-        "       https://github.com/OpenSteam001/OpenSteamTool/issues");
+        "      https://github.com/huanyuejue/steam-monitor/tree/main/pattern/" + component + "\n");
 }
 
 } // namespace
