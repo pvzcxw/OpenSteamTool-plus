@@ -3,6 +3,7 @@
 #include "Hooks_Misc.h"
 #include "HookMacros.h"
 #include "dllmain.h"
+#include "Hook/Hooks_Decryption.h"
 #include "Utils/Tickets/AppTicket.h"
 #include "Utils/Support/FnvHash.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
@@ -14,6 +15,8 @@
 #include <future>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
+#include <thread>
 #include <vector>
 #include <windows.h>
 
@@ -776,6 +779,138 @@ namespace Hooks_NetPacket_Manifest
     }
 
 } // namespace Hooks_NetPacket_Manifest
+
+// ════════════════════════════════════════════════════════════════
+//  Ownership ticket harvesting and on-demand fetch (eMsg 857/858).
+// ════════════════════════════════════════════════════════════════
+namespace Hooks_NetPacket_OwnershipTicket
+{
+    void HandleRecv(const uint8* pBody, uint32 cbBody)
+    {
+        CMsgClientGetAppOwnershipTicketResponse resp;
+        if (!resp.ParseFromArray(pBody, static_cast<int>(cbBody)))
+        {
+            LOG_NETPACKET_WARN("OwnershipTicketResponse[858]: failed to parse response (cbBody={})", cbBody);
+            return;
+        }
+
+        if (resp.eresult() != k_EResultOK || !resp.has_ticket()) return;
+        Hooks_Decryption::CacheAppOwnershipTicket(
+            resp.app_id(), reinterpret_cast<const uint8*>(resp.ticket().data()), resp.ticket().size());
+    }
+}
+
+namespace Hooks_NetPacket_TicketFetch
+{
+    using SendFrameFn = bool(__fastcall*)(void*, EWebSocketOpCode, uint8*, uint32);
+
+    std::mutex g_ContextMutex;
+    void* g_pWebSocket = nullptr;
+    SendFrameFn g_sendFrame = nullptr;
+    std::vector<uint8> g_HdrTemplate;
+
+    std::mutex g_Mutex;
+    std::unordered_set<AppId_t> g_Failed;
+    uint64 g_NextJobId = 0x7E52'0000'0000'0000ull;
+
+    void CaptureContext(void* pObject, SendFrameFn sendFrame, const uint8* pHdr, uint32 cbHdr)
+    {
+        std::lock_guard<std::mutex> lock(g_ContextMutex);
+        if (pObject) g_pWebSocket = pObject;
+        if (sendFrame) g_sendFrame = sendFrame;
+        if (!g_HdrTemplate.empty() || !pHdr || cbHdr == 0) return;
+
+        CMsgProtoBufHeader candidate;
+        if (!candidate.ParseFromArray(pHdr, static_cast<int>(cbHdr)) ||
+            !candidate.has_steamid() || candidate.steamid() == 0)
+            return;
+
+        g_HdrTemplate.assign(pHdr, pHdr + cbHdr);
+    }
+
+    bool Send(AppId_t appId)
+    {
+        std::vector<uint8> hdrTemplate;
+        void* ws = nullptr;
+        SendFrameFn send = nullptr;
+        uint64 jobId = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_ContextMutex);
+            if (!g_pWebSocket || !g_sendFrame || g_HdrTemplate.empty())
+            {
+                LOG_NETPACKET_WARN("OwnershipTicketFetch: no send context captured yet - is Steam logged in?");
+                return false;
+            }
+            hdrTemplate = g_HdrTemplate;
+            ws = g_pWebSocket;
+            send = g_sendFrame;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_Mutex);
+            jobId = ++g_NextJobId;
+        }
+
+        CMsgProtoBufHeader hdr;
+        if (!hdr.ParseFromArray(hdrTemplate.data(), static_cast<int>(hdrTemplate.size())))
+        {
+            LOG_NETPACKET_WARN("OwnershipTicketFetch: header template failed to parse");
+            return false;
+        }
+        hdr.clear_target_job_name();
+        hdr.set_jobid_source(jobId);
+        hdr.clear_jobid_target();
+
+        std::vector<uint8> body;
+        uint32 value = appId;
+        body.push_back(0x08); // field 1: app_id, varint
+        while (value >= 0x80)
+        {
+            body.push_back(static_cast<uint8>(value) | 0x80);
+            value >>= 7;
+        }
+        body.push_back(static_cast<uint8>(value));
+
+        const uint32 cbHdr = static_cast<uint32>(hdr.ByteSizeLong());
+        std::vector<uint8> frame(sizeof(MsgHdr) + cbHdr + body.size());
+        auto* mhdr = reinterpret_cast<MsgHdr*>(frame.data());
+        mhdr->eMsg = static_cast<EMsg>(
+            static_cast<uint32>(k_EMsgClientGetAppOwnershipTicket) | kMsgHdrProtoFlag);
+        mhdr->headerLength = cbHdr;
+
+        if (!hdr.SerializeToArray(frame.data() + sizeof(MsgHdr), static_cast<int>(cbHdr)))
+        {
+            LOG_NETPACKET_WARN("OwnershipTicketFetch: failed to serialize header");
+            return false;
+        }
+        std::memcpy(frame.data() + sizeof(MsgHdr) + cbHdr, body.data(), body.size());
+
+        LOG_NETPACKET_INFO("OwnershipTicketFetch send: app={} jobid={} ({} bytes)", appId, jobId, frame.size());
+        return send(ws, k_eWebSocketOpCode_Binary, frame.data(), static_cast<uint32>(frame.size()));
+    }
+
+    bool Request(AppId_t appId, uint32_t timeoutMs)
+    {
+        if (appId == 0) return false;
+        if (!Hooks_Decryption::GetMemCachedAppOwnershipTicket(appId).empty()) return true;
+        {
+            std::lock_guard<std::mutex> lock(g_Mutex);
+            if (g_Failed.contains(appId)) return false;
+        }
+        if (!Send(appId)) return false;
+
+        const auto ticket = Hooks_Decryption::WaitForCachedTicket(appId, timeoutMs);
+        if (ticket.empty())
+        {
+            std::lock_guard<std::mutex> lock(g_Mutex);
+            g_Failed.insert(appId);
+            LOG_NETPACKET_WARN("OwnershipTicketFetch: no ticket for app {} within {} ms", appId, timeoutMs);
+            return false;
+        }
+
+        LOG_NETPACKET_INFO("OwnershipTicketFetch: got ticket for app {} ({} bytes)", appId, ticket.size());
+        return true;
+    }
+}
 
 // ════════════════════════════════════════════════════════════════
 //  Hooks_NetPacket_RichPresence
@@ -1552,6 +1687,10 @@ namespace
             g_NeedReplaceBody = Hooks_NetPacket_RichPresence::HandleRecv(pBody, cbBody, pHdr, cbHdr);
             return;
 
+        case k_EMsgClientGetAppOwnershipTicketResponse: // 858
+            Hooks_NetPacket_OwnershipTicket::HandleRecv(pBody, cbBody);
+            return;
+
         default:
             return;
         }
@@ -1568,12 +1707,37 @@ namespace
         if (eWebSocketOpCode != k_eWebSocketOpCode_Binary)
             return oBBuildAndAsyncSendFrame(pObject, eWebSocketOpCode, pubData, cubData);
 
+        // The websocket object and original trampoline are only exposed at the
+        // send hook; retain them for an originated eMsg 857 request.
+        Hooks_NetPacket_TicketFetch::CaptureContext(
+            pObject, oBBuildAndAsyncSendFrame, nullptr, 0);
+
         EMsg eMsg;
         const uint8 *pHdr, *pBody;
         uint32 cbHdr, cbBody;
         bool result;
         if (UnpackRaw(pubData, cubData, eMsg, pHdr, cbHdr, pBody, cbBody))
         {
+            Hooks_NetPacket_TicketFetch::CaptureContext(
+                nullptr, nullptr, pHdr, cbHdr);
+
+            CMsgProtoBufHeader loginHeader;
+            if (loginHeader.ParseFromArray(pHdr, static_cast<int>(cbHdr)) &&
+                loginHeader.has_steamid() && loginHeader.steamid() != 0)
+            {
+                static std::once_flag ticketWarmOnce;
+                std::call_once(ticketWarmOnce, [] {
+                    std::thread([] {
+                        std::this_thread::sleep_for(std::chrono::seconds(2));
+                        constexpr AppId_t kSteamClientAppId = 7;
+                        if (!Hooks_Decryption::GetCacheAppOwnershipTicket(kSteamClientAppId).empty() ||
+                            !Hooks_Decryption::GetMemCachedAppOwnershipTicket(kSteamClientAppId).empty())
+                            return;
+                        Hooks_NetPacket::RequestOwnershipTicket(kSteamClientAppId, 4000);
+                    }).detach();
+                });
+            }
+
             SendJob(eMsg, pBody, cbBody, pHdr, cbHdr);
 
             if (g_SuppressSend)
@@ -1675,6 +1839,11 @@ namespace
 
 namespace Hooks_NetPacket
 {
+    bool RequestOwnershipTicket(AppId_t appId, uint32_t timeoutMs)
+    {
+        return Hooks_NetPacket_TicketFetch::Request(appId, timeoutMs);
+    }
+
     void Install()
     {
         RESOLVE_C(PchMsgNameFromEMsg);

@@ -77,6 +77,15 @@ message CMsgClientRequestEncryptedAppTicketResponse {
     optional EncryptedAppTicket  encrypted_app_ticket  = 3;
 }
 
+// ============================================================
+// CMsgClientGetAppOwnershipTicketResponse (eMsg 858)
+// ============================================================
+message CMsgClientGetAppOwnershipTicketResponse {
+    optional int32   eresult  = 1 [default = 2];
+    optional uint32  app_id   = 2;
+    optional bytes   ticket   = 3;
+}
+
 
 // ============================================================
 // CMsgClientPICSProductInfoRequest  (eMsg 8903)

@@ -52,7 +52,14 @@ namespace {
             LOG_IPC_DEBUG("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} not in authorization window, only forge available", appId);
             ticketSource = AppTicket::AppTicketSource::ForgeOnly;
         }        
-        if (!AppTicket::GetAppOwnershipTicket(appId, ticket, ticketSource)) return;
+        if (!AppTicket::GetAppOwnershipTicket(appId, ticket, ticketSource)) {
+            if (ticketSource != AppTicket::AppTicketSource::CredentialStoreOnly) return;
+
+            LOG_IPC_WARN("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} no credential-store ticket in auth window, serving forged ticket",
+                         appId);
+            if (!AppTicket::GetAppOwnershipTicket(
+                    appId, ticket, AppTicket::AppTicketSource::ForgeOnly)) return;
+        }
 
         if (ticket.data.size() > static_cast<size_t>(req.cbMaxTicket())) {
             LOG_IPC_WARN("IClientUser::GetAppOwnershipTicketExtendedData: AppId={} ticket too large ({} bytes) for buffer ({} bytes)",

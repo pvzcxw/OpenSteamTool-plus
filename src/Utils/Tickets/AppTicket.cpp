@@ -1,5 +1,6 @@
 #include "AppTicket.h"
 #include "Hook/Hooks_Decryption.h"
+#include "Hook/Hooks_NetPacket.h"
 #include "OSTPlatform/include/SteamCredentialStore.h"
 #include "Utils/Config/LuaConfig.h"
 #include "Utils/Logging/Log.h"
@@ -39,11 +40,37 @@ namespace AppTicket {
         return ticket;
     }
 
+    // Find a usable signed ticket for this account. The app ID embedded in
+    // the template is relocated by the existing forge below.
+    static std::vector<uint8_t> ResolveForgeSource() {
+        const auto usable = [](const std::vector<uint8_t>& ticket) {
+            return ticket.size() > kAppTicketSignatureSize;
+        };
+
+        auto source = Hooks_Decryption::GetCacheAppOwnershipTicket(kLocalAppTicketSourceAppId);
+        if (usable(source)) return source;
+
+        source = Hooks_Decryption::GetMemCachedAppOwnershipTicket(kLocalAppTicketSourceAppId);
+        if (usable(source)) return source;
+
+        source = Hooks_Decryption::GetAnyMemCachedAppOwnershipTicket();
+        if (usable(source)) return source;
+
+        LOG_INFO("ForgeLocalAppOwnershipTicket: no cached template, requesting ownership ticket {} from Steam",
+                 kLocalAppTicketSourceAppId);
+        Hooks_NetPacket::RequestOwnershipTicket(kLocalAppTicketSourceAppId, 1500);
+
+        source = Hooks_Decryption::GetMemCachedAppOwnershipTicket(kLocalAppTicketSourceAppId);
+        if (usable(source)) return source;
+        return Hooks_Decryption::GetAnyMemCachedAppOwnershipTicket();
+    }
+
     // Exploit steamdrmp's off-by-four ticket parsing vulnerability:
     static std::vector<uint8_t> ForgeLocalAppOwnershipTicket(AppId_t appId) {
-        std::vector<uint8_t> source = Hooks_Decryption::GetCacheAppOwnershipTicket(kLocalAppTicketSourceAppId);
+        std::vector<uint8_t> source = ResolveForgeSource();
         if (source.size() <= kAppTicketSignatureSize) {
-            LOG_DEBUG("ForgeLocalAppOwnershipTicket for AppId {}: no source appticket", appId);
+            LOG_ERROR("ForgeLocalAppOwnershipTicket for AppId {}: no source appticket; localconfig, harvested tickets, and the eMsg 857 request yielded none",
+                      appId);
             return {};
         }
 

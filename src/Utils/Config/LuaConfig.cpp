@@ -28,6 +28,8 @@ namespace LuaConfig{
     std::unordered_map<uint64_t, ManifestOverride> ManifestOverrides{};
     std::unordered_map<AppId_t, uint64_t> StatSteamIdSet{};
     std::unordered_set<AppId_t> OwnedAppIdSet{};
+    static std::unordered_set<AppId_t> ForcedDenuvoSet{};
+    static std::unordered_set<AppId_t> ForcedNonDenuvoSet{};
 
     // Per-file tracking: which depots each .lua file contributed.
     static std::string g_currentFile;
@@ -418,6 +420,27 @@ namespace LuaConfig{
         return 0;
     }
 
+    static int lua_forcedenuvo(lua_State* L) {
+        if (lua_gettop(L) < 1 || !lua_isinteger(L, 1))
+            return luaL_error(L, "forcedenuvo requires (appid: integer[, force: boolean])");
+        const lua_Integer value = lua_tointeger(L, 1);
+        if (value <= 0 || value > static_cast<lua_Integer>(UINT32_MAX))
+            return luaL_error(L, "forcedenuvo: appid out of range");
+        if (lua_gettop(L) >= 2 && !lua_isboolean(L, 2))
+            return luaL_error(L, "forcedenuvo: force must be a boolean");
+
+        const AppId_t appId = static_cast<AppId_t>(value);
+        const bool force = lua_gettop(L) < 2 || lua_toboolean(L, 2) != 0;
+        if (force) {
+            ForcedNonDenuvoSet.erase(appId);
+            ForcedDenuvoSet.insert(appId);
+        } else {
+            ForcedDenuvoSet.erase(appId);
+            ForcedNonDenuvoSet.insert(appId);
+        }
+        return 0;
+    }
+
     // ── init / cleanup ───────────────────────────────────────────
     static bool Initialize() {
         if (g_lua_state)
@@ -451,6 +474,7 @@ namespace LuaConfig{
         register_func(g_lua_state, "setappticket", lua_setAppticket);
         register_func(g_lua_state, "seteticket", lua_setEticket);
         register_func(g_lua_state, "setstat", lua_setStat);
+        register_func(g_lua_state, "forcedenuvo", lua_forcedenuvo);
         return true;
     }
 
@@ -469,6 +493,14 @@ namespace LuaConfig{
 
     bool IsOwned(AppId_t AppId) {
         return OwnedAppIdSet.count(AppId);
+    }
+
+    bool IsForcedDenuvo(AppId_t appId) {
+        return ForcedDenuvoSet.count(appId) > 0;
+    }
+
+    bool IsForcedNonDenuvo(AppId_t appId) {
+        return ForcedNonDenuvoSet.count(appId) > 0;
     }
 
     void MarkOwned(AppId_t AppId) {
