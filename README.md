@@ -138,82 +138,46 @@ If no config file is found, built-in defaults are used — no auto-creation.
 The file is watched while Steam is running; valid changes are hot-reloaded without restarting Steam.
 
 ```toml
-[log]
-# Debug build only.  Level: trace, debug, info, warn, error
-level = "info"
-
-[manifest]
-# Upstream API for depot manifest request codes.  Options: "opensteamtool", "steamrun", "wudrm"
-url = "opensteamtool"
-
-# HTTP timeouts for manifest requests (milliseconds)
-timeout_resolve_ms = 5000
-timeout_connect_ms = 5000
-timeout_send_ms    = 10000
-timeout_recv_ms    = 10000
-
-[stats]
-# Query https://stats.opensteamtool.com/{appid} when no Lua setStat override exists.
-# Priority: setStat > stats API > hardcoded preset SteamID.
-enable_api = true
-
-# Additional Lua config directories (optional).
-# Files are loaded after the default <Steam>/config/lua folder.
-# The default folder is always loaded last so user files take priority.
-[lua]
-paths = []
-
-[inject]
-# Optional library injection into game processes.
-# The injected library must match the target process architecture.
-enabled = false
-# library_x64 = "OpenSteamTool.GameHook.x64.dll"
-# library_x86 = "OpenSteamTool.GameHook.x86.dll"
-
-# Optional metadata mirror. See "Steam version compatibility" below.
-[remote]
-# url_template = "https://your.server/{channel}/{component}/{sha256}.toml"# opensteamtool.toml — OpenSteamTool configuration
-# Place at: <Steam>/opensteamtool.toml
-# This file is loaded at startup and hot-reloaded after changes.
+# opensteamtool.toml — Archivo de configuración de OpenSteamTool  
+# Ubicación de almacenamiento: <Steam>/opensteamtool.toml  
+# Este archivo se carga al iniciar y se recarga automáticamente en caliente tras modificaciones.
 
 [log]
-# Log verbosity for all log files (Debug build only).
-# Valid: trace, debug, info, warn, error
+Nivel de detalle de todos los archivos de registro (solo aplicable a la compilación de depuración).  
+Valores opcionales: trace, debug, info, warn, error
 level = "debug"
 
 [manifest]
-# Which upstream API to query for depot manifest request codes.
+# Consultar la API superior utilizada por el código de solicitud de lista de almacén.
 #   "20770407"     → https://20770407.xyz/manifest/{depotId}/{gid}
 #   "SDM"          → https://steamapi.993499094.xyz/manifest/{depotId}/{gid}
-#   "manifestdex"  → https://manifest.manifestdex.com/{gid} (ManifestDeX user agent is added automatically)
-#   "opensteamtool" → https://manifest.opensteamtool.com/{gid}   (default)
-#   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (recommended for China users)
+#   "manifestdex" → https://manifest.manifestdex.com/{gid} (el agente de usuario ManifestDeX se añadirá automáticamente)  
+#   "opensteamtool" → https://manifest.opensteamtool.com/{gid} (por defecto)  
+#   "wudrm"         → http://gmrc.wudrm.com/manifest/{gid} (recomendado para usuarios chinos)
 #   "steamrun"      → https://manifest.steam.run/api/manifest/{gid}
-# If <Steam>/config/lua/manifest.lua defines fetch_manifest_code(gid) or
-# fetch_manifest_code_ex(app_id, depot_id, gid), those Lua functions take
-# priority over the url setting below.
+Si en <Steam>/config/lua/manifest.lua se define fetch_manifest_code(gid) o
+fetch_manifest_code_ex(app_id, depot_id, gid), estas funciones Lua tendrán prioridad sobre la configuración de URL que se indica a continuación.
 #
-# --- manifest.lua reference ---
-# The C++ side provides http_get(url [, headers]) and
-# http_post(url, body [, headers]) to Lua scripts.  Both return
-# (body_string, status_code) on success, or (nil, error_msg) on failure.
+# --- manifest.lua referencia ---
+# El lado C++ proporciona a los scripts Lua las funciones http_get(url, [headers]) y
+# http_post(url, body, [headers]). Ambas devuelven (body_string, status_code) en caso de éxito, y (nil, error_msg) en caso de fallo.
 #
-# -- Example: try wudrm (plain-text uint64), fall back to steamrun (JSON).
-# -- Return a digit *string* to avoid double-precision loss > 2^53.
-# function fetch_manifest_code(gid)
-#     -- wudrm responds with e.g. "10570517747114638659"
-#     local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
-#     if st == 200 and body then return body end
-#     -- steamrun responds with {"content":"1666836470726104466"}
-#     body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
-#     if st == 200 and body then
-#         local code = body:match('"content":"(%d+)"')
-#         if code then return code end
-#     end
-#     return nil
-# end
+# -- Ejemplo: intenta usar wudrm (texto puro uint64), si falla retrocede a steamrun (JSON).  
+# -- Devuelve una cadena de números para evitar pérdidas de precisión en doble precisión superiores a 2^53.
+function fetch_manifest_code(gid)
+-- wudrm responde por ejemplo "10570517747114638659"
+local body, st = http_get("http://gmrc.wudrm.com/manifest/" .. gid)
+if st == 200 and body then return body end
+-- steamrun responde {"contenido":"1666836470726104466"}
+body, st = http_get("https://manifest.steam.run/api/manifest/" .. gid)
+if st == 200 and body then
+local code = body:match('"content":"(%d+)"')
+if code then return code end
+end
+return nil
+end
 #
-# -- Extended variant with app_id and depot_id:
+# -- Versión extendida con app_id y depot_id:
 # function fetch_manifest_code_ex(app_id, depot_id, gid)
 #     local body, st = http_get("https://your-api.com/manifest-code/" .. app_id .. "/" .. gid)
 #     if st == 200 and body and body:match("^%d+$") then
@@ -223,56 +187,50 @@ level = "debug"
 # end
 url = "opensteamtool"
 
-# HTTP timeouts for manifest requests (milliseconds).
-# timeout_resolve_ms  — DNS resolution        (default: 5000)
-# timeout_connect_ms  — TCP handshake          (default: 5000)
-# timeout_send_ms     — request transmission   (default: 10000)
-# timeout_recv_ms     — response body download (default: 10000)
+# manifest Tiempo de espera HTTP solicitado (milisegundos).  
+# timeout_resolve_ms — Resolución DNS        (por defecto: 5000)  
+# timeout_connect_ms — Gestión TCP          (por defecto: 5000)  
+# timeout_send_ms     — Transmisión de solicitud         (por defecto: 10000)  
+# timeout_recv_ms     — Descarga del cuerpo de respuesta         (por defecto: 10000)
 timeout_resolve_ms = 5000
 timeout_connect_ms = 5000
 timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
 
 [stats]
-# Automatically query https://stats.opensteamtool.com/{appid} for a recommended
-# SteamID when no Lua setStat(appid, "steamid") override exists.
-# Priority: setStat > stats API when enabled and valid > hardcoded preset SteamID.
+# Cuando no se ha configurado la función Lua setStat(appid, "steamid"), se consulta automáticamente https://stats.opensteamtool.com/{appid} para obtener el SteamID recomendado.  
+# Prioridad: cuando está activada y funcional, setStat > API de estadísticas > SteamID predeterminado fijo.
 enable_api = true
 
-# Additional Lua config directories (optional).
-# Files are loaded after the default <Steam>/config/lua folder.
-# The default folder is always loaded last so user files take priority.
-# Example — load a custom directory on another drive:
+# Directorio de configuración adicional de Lua (opcional).  
+# Los archivos se cargarán después de la carpeta predeterminada <Steam>/config/lua.  
+# La carpeta predeterminada siempre se carga por último, por lo que los archivos personalizados del usuario tienen prioridad.  
+# Ejemplo: cargar un directorio personalizado en otro disco:
 #   [lua]
 #   paths = ["D:/my-steam-config/lua"]
 [lua]
 # paths = []
 
 [inject]
-# Optional library injection into game processes.
-# The injected library must match the target process architecture.
+# Inyección opcional de bibliotecas en el proceso del juego.  
+# Las bibliotecas inyectadas deben coincidir con la arquitectura del proceso objetivo.
 enabled = false
 # library_x64 = "OpenSteamTool.GameHook.x64.dll"
 # library_x86 = "OpenSteamTool.GameHook.x86.dll"
 
 [cloud]
-# Optional Steam Cloud save redirection for unlocked ("lua") games, powered by
-# CloudRedirect (https://github.com/Selectively11/CloudRedirect).
-# When enabled, OpenSteamTool loads cloud_redirect.dll inside Steam, registers
-# every addappid() game as a redirected app, and routes their Steam Cloud RPCs
-# through CloudRedirect's cloud-save engine.
+# Función opcional de redirección de almacenamiento en la nube Steam, compatible con juegos no bloqueados ("lua"), proporcionada por CloudRedirect (https://github.com/Selectively11/CloudRedirect).  
+# Una vez activada, OpenSteamTool carga cloud_redirect.dll dentro de Steam, registrando cada juego añadido mediante addappid() como una aplicación de redirección y enrutando las solicitudes RPC de nube Steam a través del motor de almacenamiento en la nube de CloudRedirect.
 #
-# Provider sign-in (Google Drive / OneDrive / local folder) is still done through
-# CloudRedirect's own companion app — OpenSteamTool only hosts the DLL.
+# Inicio de sesión del proveedor (Google Drive / OneDrive / carpeta local) aún debe pasar por la aplicación complementaria integrada de CloudRedirect; OpenSteamTool solo aloja DLL.
 enabled = false
-# Path to cloud_redirect.dll. Absolute, or relative to the Steam root directory.
-# Defaults to "<Steam>/cloud_redirect.dll" when unset.
+# La ruta de cloud_redirect.dll. Puede ser una ruta absoluta o relativa al directorio raíz de Steam.
+# Si no se especifica, el valor predeterminado es "<Steam>/cloud_redirect.dll".
 # library = "cloud_redirect.dll"
 
 [remote]
-# Optional metadata mirror. Leave unset to use GitHub with jsDelivr fallback.
-# A custom mirror replaces the built-in remote sources and must include all
-# three placeholders: {channel}, {component}, and {sha256}.
+# Imagen de metadatos opcional. Si no se especifica, se utilizará GitHub y jsDelivr como alternativa de respaldo.
+# La imagen personalizada reemplazará la fuente remota predeterminada y debe incluir tres marcadores de posición: {channel}, {component} y {sha256}.
 #
 # url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
 # url_template = "https://fast.jsdelivr.net/gh/OpenSteam001/steam-monitor@{channel}/{component}/{sha256}.toml"
