@@ -325,12 +325,13 @@ url_template = "https://your.server/{channel}/{component}/{sha256}.toml"
 
 ### 快速构建
 ```powershell
-build.bat
+cmake -S src -B build -G "Ninja Multi-Config"
+cmake --build build --config Release/Debug
 ```
 
 ### 输出
-- Debug：`build/Debug/OpenSteamTool.dll`、`build/Debug/dwmapi.dll`、`build/Debug/xinput1_4.dll`、`build/Debug/winmm.dll`
-- Release：`build/Release/OpenSteamTool.dll`、`build/Release/dwmapi.dll`、`build/Release/xinput1_4.dll`、`build/Release/winmm.dll`
+- Debug：`build/Debug/OpenSteamTool.dll`、`build/Debug/dwmapi.dll`、`build/Debug/winmm.dll`
+- Release：`build/Release/OpenSteamTool.dll`、`build/Release/dwmapi.dll`、`build/Release/winmm.dll`
 
 ## 免责声明
 本项目仅供研究和教育目的使用。你负责遵守当地法律、平台服务条款和软件许可证。

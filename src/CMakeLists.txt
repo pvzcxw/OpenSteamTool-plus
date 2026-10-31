@@ -180,13 +180,6 @@ add_library(dwmapi SHARED
     dwmapi/dwmapi.def
 )
 
-# ---------------------------------------------------------------------------
-# xinput1_4.dll hijack — secondary loader DLL placed alongside Steam.
-# ---------------------------------------------------------------------------
-add_library(xinput1_4 SHARED
-    xinput1_4/xinput1_4.cpp
-    xinput1_4/xinput1_4.def
-)
 
 # winmm.dll hijack — complete ordinal-preserving multimedia API proxy.
 add_library(winmm SHARED

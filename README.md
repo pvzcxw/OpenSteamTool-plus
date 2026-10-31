@@ -331,12 +331,13 @@ The log level is controlled by `[log] level` in `opensteamtool.toml`.
 
 ### Quick build
 ```powershell
-build.bat
+cmake -S src -B build -G "Ninja Multi-Config"
+cmake --build build --config Release/Debug
 ```
 
 ### Output
-- Debug: `build/Debug/OpenSteamTool.dll`, `build/Debug/dwmapi.dll`, `build/Debug/xinput1_4.dll`, `build/Debug/winmm.dll`
-- Release: `build/Release/OpenSteamTool.dll`, `build/Release/dwmapi.dll`, `build/Release/xinput1_4.dll`, `build/Release/winmm.dll`
+- Debug: `build/Debug/OpenSteamTool.dll`, `build/Debug/dwmapi.dll`, `build/Debug/winmm.dll`
+- Release: `build/Release/OpenSteamTool.dll`, `build/Release/dwmapi.dll`, `build/Release/winmm.dll`
 
 ## Disclaimer
 This project is provided for research and educational purposes only. You are responsible for complying with local laws, platform terms of service, and software licenses.
