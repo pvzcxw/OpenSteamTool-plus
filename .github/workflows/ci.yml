@@ -41,6 +41,10 @@ jobs:
             build/${{ matrix.config }}/dwmapi.ilk
             build/${{ matrix.config }}/dwmapi.exp
             build/${{ matrix.config }}/dwmapi.pdb
+            build/${{ matrix.config }}/winmm.dll
+            build/${{ matrix.config }}/winmm.ilk
+            build/${{ matrix.config }}/winmm.exp
+            build/${{ matrix.config }}/winmm.pdb
             build/${{ matrix.config }}/OpenSteamTool.dll
             build/${{ matrix.config }}/OpenSteamTool.ilk
             build/${{ matrix.config }}/OpenSteamTool.exp

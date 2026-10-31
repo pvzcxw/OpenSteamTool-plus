@@ -96,7 +96,7 @@ add_custom_command(
 add_subdirectory(OSTPlatform)
 
 # ---------------------------------------------------------------------------
-# Windows host artifacts: the injected hook DLL and the two loader-hijack DLLs.
+# Windows host artifacts: the injected hook DLL and the loader-hijack DLLs.
 # All Windows-only by construction (PE DLL hijacking + Win32 hooking).
 # ---------------------------------------------------------------------------
 
@@ -188,11 +188,17 @@ add_library(xinput1_4 SHARED
     xinput1_4/xinput1_4.def
 )
 
+# winmm.dll hijack — complete ordinal-preserving multimedia API proxy.
+add_library(winmm SHARED
+    winmm/winmm.cpp
+    winmm/winmm.def
+)
+
 # Place final DLLs and their linker/debug sidecars in build/<configuration>.
 # Use a configuration generator expression so single- and multi-config
 # generators share the same layout without CMake adding another config folder.
 set(_OST_DLL_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../build/$<CONFIG>")
-foreach(_target IN ITEMS OpenSteamTool dwmapi xinput1_4)
+foreach(_target IN ITEMS OpenSteamTool dwmapi xinput1_4 winmm)
     set_target_properties(${_target} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${_OST_DLL_OUTPUT_DIRECTORY}"
         ARCHIVE_OUTPUT_DIRECTORY "${_OST_DLL_OUTPUT_DIRECTORY}"

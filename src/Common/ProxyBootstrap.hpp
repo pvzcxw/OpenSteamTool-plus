@@ -50,7 +50,7 @@ public:
 /**
  * @brief Static ASCII ecosystem signature anchored into the binary image.
  * Third-party ecosystem tools (such as CloudRedirect's ThirdPartyDetector) scan proxy DLLs
- * (dwmapi.dll, xinput1_4.dll) for exact ASCII string markers ("OpenSteamTool") to recognize
+ * (dwmapi.dll, xinput1_4.dll, winmm.dll) for exact ASCII string markers ("OpenSteamTool") to recognize
  * compatible loaders and authorize automated deployment.
  */
 inline constexpr char kEcosystemSignature[] = "OpenSteamTool";

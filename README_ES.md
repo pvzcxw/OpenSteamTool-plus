@@ -101,7 +101,7 @@ Este fork corrige muchos pequeños problemas, incluyendo patterns y manifestos, 
 
 ## Uso
 1. Ejecuta `build.bat` desde la raíz del proyecto para compilarlo.
-2. Copia los archivos generados `dwmapi.dll`, `xinput1_4.dll` y `OpenSteamTool.dll` al directorio raíz de Steam.
+2. Copie el archivo generado `OpenSteamTool.dll` al directorio raíz de Steam, y copie `dwmapi.dll` al directorio `Steam\bin`, ya que estamos probando el nuevo anclaje de `winmm.dll`.
 3. Crea un directorio para Lua (por ejemplo, C:\steam\config\lua) y coloca allí tus scripts de Lua. La DLL los cargará y ejecutará automáticamente.
 4. Ejemplo de Lua:
 ```lua
