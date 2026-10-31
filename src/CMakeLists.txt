@@ -191,7 +191,7 @@ add_library(winmm SHARED
 # Use a configuration generator expression so single- and multi-config
 # generators share the same layout without CMake adding another config folder.
 set(_OST_DLL_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../build/$<CONFIG>")
-foreach(_target IN ITEMS OpenSteamTool dwmapi xinput1_4 winmm)
+foreach(_target IN ITEMS OpenSteamTool dwmapi winmm)
     set_target_properties(${_target} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${_OST_DLL_OUTPUT_DIRECTORY}"
         ARCHIVE_OUTPUT_DIRECTORY "${_OST_DLL_OUTPUT_DIRECTORY}"
