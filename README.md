@@ -200,7 +200,7 @@ timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
 
 [stats]
-# Automatically query https://stats.opensteamtool.com/{appid} for a recommended
+# Automatically query https://stats.luastools.xyz/{appid} for a recommended
 # SteamID when no Lua setStat(appid, "steamid") override exists.
 # Priority: setStat > stats API when enabled and valid > hardcoded preset SteamID.
 enable_api = true

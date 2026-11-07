@@ -192,7 +192,7 @@ timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
 
 [stats]
-# Cuando no se ha configurado la función Lua setStat(appid, "steamid"), se consulta automáticamente https://stats.opensteamtool.com/{appid} para obtener el SteamID recomendado.  
+# Cuando no se ha configurado la función Lua setStat(appid, "steamid"), se consulta automáticamente https://stats.luastools.xyz/{appid} para obtener el SteamID recomendado.  
 # Prioridad: cuando está activada y funcional, setStat > API de estadísticas > SteamID predeterminado fijo.
 enable_api = true
 

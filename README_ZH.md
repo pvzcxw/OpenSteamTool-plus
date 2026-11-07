@@ -199,7 +199,7 @@ timeout_send_ms    = 10000
 timeout_recv_ms    = 10000
 
 [stats]
-# 当未设置 Lua 函数 setStat(appid, "steamid") 时，自动查询 https://stats.opensteamtool.com/{appid} 获取推荐的 SteamID。
+# 当未设置 Lua 函数 setStat(appid, "steamid") 时，自动查询 https://stats.luastools.xyz/{appid} 获取推荐的 SteamID。
 # 优先级：启用且有效时，setStat > stats API > 固定预设 SteamID。
 enable_api = true
 
