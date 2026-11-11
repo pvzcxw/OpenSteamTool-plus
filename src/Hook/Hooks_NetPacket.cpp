@@ -1,6 +1,7 @@
 #include "Hooks_NetPacket.h"
 #include "Utils/SteamMetadata/ManifestClient.h"
 #include "Hooks_Misc.h"
+#include "Hooks_Package.h"
 #include "HookMacros.h"
 #include "dllmain.h"
 #include "Hook/Hooks_Decryption.h"
@@ -12,6 +13,7 @@
 #include <atomic>
 #include <cstring>
 #include <deque>
+#include <format>
 #include <future>
 #include <mutex>
 #include <unordered_map>
@@ -640,11 +642,38 @@ namespace Hooks_NetPacket_ETicket
 namespace Hooks_NetPacket_FamilySharing
 {
 
-    void ClearBody(const uint8 *, uint32)
+    void LogStopPlaying(const uint8* pBody, uint32 cbBody)
     {
-        LOG_NETPACKET_DEBUG("Clearing family sharing message...");
-        g_cbNewBody = 0;
-        g_NeedReplaceBody = true;
+        CMsgClientSharedLibraryStopPlaying msg;
+        if (!msg.ParseFromArray(pBody, static_cast<int>(cbBody)))
+        {
+            LOG_NETPACKET_WARN("FamilySharing: StopPlaying body unparsable ({} bytes)", cbBody);
+            return;
+        }
+
+        constexpr int kMaxLogged = 8;
+        std::string detail;
+        for (int i = 0; i < msg.stop_apps_size() && i < kMaxLogged; ++i)
+        {
+            const auto& app = msg.stop_apps(i);
+            if (!detail.empty()) detail += ", ";
+            detail += std::format("app_id={} owner_id={}",
+                                  app.has_app_id() ? app.app_id() : 0,
+                                  app.has_owner_id() ? app.owner_id() : 0);
+        }
+        if (msg.stop_apps_size() > kMaxLogged)
+            detail += std::format(", ...(+{})", msg.stop_apps_size() - kMaxLogged);
+
+        LOG_NETPACKET_INFO("FamilySharing: StopPlaying seconds_left={} stop_apps=[{}]",
+                           msg.has_seconds_left() ? msg.seconds_left() : -1, detail);
+    }
+
+    void LogRunningApps(const uint8* pBody, uint32 cbBody)
+    {
+        CFamilyGroupsClient_NotifyRunningApps_Notification notify;
+        if (!notify.ParseFromArray(pBody, static_cast<int>(cbBody))) return;
+        LOG_NETPACKET_DEBUG("FamilySharing: NotifyRunningApps (family_groupid {}, {} running apps)",
+                            notify.family_groupid(), notify.running_apps_size());
     }
 
 } // namespace Hooks_NetPacket_FamilySharing
@@ -1302,6 +1331,43 @@ namespace Hooks_NetPacket_OnlineFix
             }
         }
 
+        for (int i = 0; i < msg.games_played_size(); ++i)
+        {
+            auto* game = msg.mutable_games_played(i);
+            const AppId_t playedAppId = static_cast<AppId_t>(game->game_id() & UINT32_MAX);
+            const AccountID_t reportedOwner = game->has_owner_id() ? game->owner_id() : 0;
+            const AccountID_t lender = Hooks_Package::GetFamilySharedOwner(playedAppId);
+            const bool inLua = LuaConfig::HasDepot(playedAppId, true);
+
+            if (lender > 1 && inLua)
+            {
+                game->set_game_id(kFamilySharedMaskAppId);
+                game->clear_game_extra_info();
+                game->clear_owner_id();
+                patched = true;
+                LOG_ONLINEFIX_INFO("FamilySharing: appid {} -> {} (shared+lua, lender {})",
+                                   playedAppId, kFamilySharedMaskAppId, lender);
+                continue;
+            }
+
+            if (inLua)
+            {
+                if (reportedOwner != 0)
+                {
+                    game->clear_owner_id();
+                    patched = true;
+                }
+                continue;
+            }
+
+            if (lender <= 1 || reportedOwner == lender) continue;
+
+            game->set_owner_id(lender);
+            patched = true;
+            LOG_ONLINEFIX_INFO("FamilySharing: restoring owner_id {} -> {} for appid {}",
+                               reportedOwner, lender, playedAppId);
+        }
+
         if (!patched)
             return false;
 
@@ -1629,7 +1695,7 @@ namespace
         {
 
         case HASH_JOB_NotifyRunningApps:
-            Hooks_NetPacket_FamilySharing::ClearBody(pBody, cbBody);
+            Hooks_NetPacket_FamilySharing::LogRunningApps(pBody, cbBody);
             return;
 
         case HASH_JOB_GetUserStats:
@@ -1641,6 +1707,13 @@ namespace
             return;
 
             // ---- add new 147 service methods here ----
+        default:
+            if (std::strstr(targetJobName, "NotifyRunningApps") != nullptr)
+            {
+                Hooks_NetPacket_FamilySharing::LogRunningApps(pBody, cbBody);
+                return;
+            }
+            break;
         }
     }
 
@@ -1680,7 +1753,7 @@ namespace
             return;
 
         case k_EMsgClientSharedLibraryStopPlaying: // 9406
-            Hooks_NetPacket_FamilySharing::ClearBody(pBody, cbBody);
+            Hooks_NetPacket_FamilySharing::LogStopPlaying(pBody, cbBody);
             return;
 
         case k_EMsgClientPersonaState: // 766

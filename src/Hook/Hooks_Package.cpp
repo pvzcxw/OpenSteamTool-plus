@@ -3,6 +3,8 @@
 #include "Hooks_SteamUI.h"
 #include "dllmain.h"
 #include "Utils/HookSupport/VehCommon.h"
+#include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace {
@@ -14,6 +16,16 @@ namespace {
     
     void* g_pCUser = nullptr;
     PackageInfo* g_pInjectedPackageInfo = nullptr;
+
+    // Capture the lender before ownership flags are rewritten.
+    std::unordered_map<AppId_t, AccountID_t> g_familySharedOwners;
+    std::mutex g_familySharedOwnersMutex;
+
+    bool HasFamilySharedOwner(AppId_t appId) {
+        std::lock_guard<std::mutex> lock(g_familySharedOwnersMutex);
+        return g_familySharedOwners.find(appId) != g_familySharedOwners.end();
+    }
+
     bool  g_licenseInitialized = false;
     bool  g_licenseRefreshPending = false;
 
@@ -97,17 +109,31 @@ namespace {
         bool result = oCheckAppOwnership(pObj, appId, pOwn);
         TryInitFakeLicenseOnce();
 
-        if (LuaConfig::HasDepot(appId,false)) {
-            if (result && pOwn->ExistInPackageNums > 1) {
-                // Actually owned — record so HasDepot excludes it going forward
+        if (pOwn && (pOwn->bFamilyShared || pOwn->bBorrowed) && pOwn->SteamId32 != 0) {
+            std::lock_guard<std::mutex> lock(g_familySharedOwnersMutex);
+            g_familySharedOwners[appId] = pOwn->SteamId32;
+        }
+
+        if (pOwn && LuaConfig::HasDepot(appId, true)) {
+            const bool borrowed = pOwn->bFamilyShared || pOwn->bBorrowed;
+            const bool knownShared = HasFamilySharedOwner(appId);
+            if (result && pOwn->ExistInPackageNums > 1 && !borrowed && !knownShared) {
+                // Actually owned: mark it so LuaConfig excludes it after this check.
                 LuaConfig::MarkOwned(appId);
                 pOwn->ReleaseState = EAppReleaseState::Released;
+                return result;
             } else {
                 pOwn->PackageId    = kInjectedPackageId;
                 pOwn->ReleaseState = EAppReleaseState::Released;
-                pOwn->bOwnsLicense = true; //This forces DLCs on steam family shared games that u dont own when adding their appid via .lua
-                // Setting this free flag to false will hide it from the library UI.
+                pOwn->bOwnsLicense = true;
                 pOwn->bFreeLicense = false;
+                pOwn->bFamilyShared = false;
+                pOwn->bBorrowed = false;
+                pOwn->bLicenseLocked = false;
+                pOwn->bLicensePending = false;
+                pOwn->bLicenseExpired = false;
+                pOwn->bGuestPass = false;
+                pOwn->bLicensePermanent = true;
                 return true;
             }
         }
@@ -132,6 +158,12 @@ namespace Hooks_Package {
         UNHOOK_BEGIN();
         UNINSTALL_HOOK_C(CheckAppOwnership);
         UNHOOK_END();
+    }
+
+    AccountID_t GetFamilySharedOwner(AppId_t appId) {
+        std::lock_guard<std::mutex> lock(g_familySharedOwnersMutex);
+        const auto it = g_familySharedOwners.find(appId);
+        return it == g_familySharedOwners.end() ? 0 : it->second;
     }
 
     void NotifyLicenseChanged() {

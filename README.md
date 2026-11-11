@@ -52,7 +52,9 @@
 - Configure `enabled`, `library_x64`, and `library_x86`; the injected library must match the target process architecture.`library_x64` and `library_x86` may be absolute paths, or relative paths resolved from the Steam root directory.
 
 ### Family Sharing and Remote Play
-- Bypass Steam Family Sharing restrictions for games that have been added to the library with `addappid` in Lua. All accounts in the Steam Family that participate in sharing must use OpenSteamTool for this to work.
+- Lua-listed shared games are handled by the fake-license path; the network hook tracks the lender before clearing the borrowed flags and uses that record when processing play-state packets.
+- Games already owned by the current account retain the normal license path, even when they are also listed in Lua.
+- Shared games not listed in Lua continue to follow Steam's native sharing behavior. The library UI only fills an empty owner for Lua-listed apps when no lender was recorded.
 
 ### Compatible with games protected by Denuvo and SteamStub
 - SteamStub-only games do not require configuring `AppTicket`. OpenSteamTool can reuse Steam's local ConfigStore ticket and forge the requested AppId through a SteamDRMP off-by-four ticket parsing vulnerability, without injecting into the game process.
