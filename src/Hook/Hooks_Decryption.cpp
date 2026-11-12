@@ -3,11 +3,14 @@
 #include "dllmain.h"
 #include "Utils/Tickets/AppTicket.h"
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
+#include "Utils/Config/LuaConfig.h"
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -24,17 +27,25 @@ namespace {
     std::unordered_map<AppId_t, std::vector<uint8_t>> g_Tickets;
     uint64_t g_TicketSteamId = 0;
 
+    bool ParseAppId(std::string_view text, AppId_t* outAppId) {
+        if (!outAppId || text.empty()) return false;
+        uint32_t value = 0;
+        const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (ec != std::errc{} || ptr != text.data() + text.size() || value == 0)
+            return false;
+        *outAppId = value;
+        return true;
+    }
+
     void HarvestAppticket(const std::string& name, const char* data, size_t size) {
         static constexpr std::string_view kPrefix = "apptickets\\";
         if (!name.starts_with(kPrefix)) return;
 
-        const char* begin = name.data() + kPrefix.size();
-        char* end = nullptr;
-        const unsigned long value = std::strtoul(begin, &end, 10);
-        if (value == 0 || value > UINT32_MAX || !end || *end != '\0') return;
+        AppId_t appId = 0;
+        if (!ParseAppId(std::string_view(name).substr(kPrefix.size()), &appId)) return;
 
         Hooks_Decryption::CacheAppOwnershipTicket(
-            static_cast<AppId_t>(value), reinterpret_cast<const uint8_t*>(data), size);
+            appId, reinterpret_cast<const uint8_t*>(data), size);
     }
 
     HOOK_FUNC(ConfigStoreGetBinary, int32, void* pObject, EConfigStore eConfigStore, const char* KeyName, char* Key, uint32 KeySize) {
@@ -45,22 +56,70 @@ namespace {
                 LOG_DECRYPTIONKEY_DEBUG("ConfigStoreGetBinary: captured local ConfigStore at {}", pObject);
             }
         }
+        if (!KeyName)
+            return oConfigStoreGetBinary(pObject, eConfigStore, KeyName, Key, KeySize);
         std::string name(KeyName);
         LOG_DECRYPTIONKEY_DEBUG("ConfigStore::GetBinary called for pObject={}, eConfigStore={}, KeyName='{}'", 
                                     pObject, static_cast<uint32>(eConfigStore), name);
-        // Expected shape: ".../<DepotId>\DecryptionKey"
-        if (size_t last = name.find("\\DecryptionKey"); last != std::string::npos) {
-            if (size_t start = name.find_last_of("\\", last - 1); start != std::string::npos) {
-                AppId_t depotId = std::stoul(name.substr(start + 1, last - start - 1));
-                if (const auto& key = LuaConfig::GetDecryptionKey(depotId); !key.empty()) {
-                    if (KeySize >= key.size()) {
-                        LOG_DECRYPTIONKEY_INFO("Providing decryption key for depot {}: {}", depotId,
-                                               spdlog::to_hex(key.data(), key.data() + key.size()));
-                        memcpy(Key, key.data(), key.size());
-                        return static_cast<int32>(key.size());
+
+        // 票据读取。带壳的游戏启动时会在这里取所有权票据，拿不到就过不了壳的校验。
+        // 假入库的游戏本地没有票，用一张真实票据改出目标 appid 补上，
+        // 签名段保持原样，壳按老版本的解析方式能对得上。
+        static constexpr std::string_view kTicketPrefix = "apptickets\\";
+        if (name.rfind(kTicketPrefix, 0) == 0) {
+            const int32 got = oConfigStoreGetBinary(pObject, eConfigStore, KeyName, Key, KeySize);
+            AppId_t ticketAppId = 0;
+            const std::string_view suffix(name.data() + kTicketPrefix.size(),
+                                          name.size() - kTicketPrefix.size());
+            if (got > 0 || !ParseAppId(suffix, &ticketAppId)) return got;
+            LOG_DECRYPTIONKEY_DEBUG("ConfigStore appticket '{}': ret={}", name, got);
+
+            if (Key && KeySize != 0 &&
+                LuaConfig::HasDepot(ticketAppId, false)) {
+                AppTicket::AppOwnershipTicket forged{};
+                if (AppTicket::GetAppOwnershipTicket(ticketAppId, forged,
+                        AppTicket::AppTicketSource::ForgeOnly)
+                    && !forged.data.empty()
+                    && forged.data.size() <= KeySize
+                    && forged.data.size() <= static_cast<size_t>(std::numeric_limits<int32>::max())) {
+                    // 顺带把主数据区里的 appid 也改成目标值。插入法只在签名前
+                    // 多塞了一份，按常规偏移读到的还是 donor 的值，两边对不上。
+                    constexpr size_t kAppIdEnd = AppTicket::kAppTicketAppIdOffset + sizeof(AppId_t);
+                    if (forged.data.size() < kAppIdEnd) {
+                        LOG_DECRYPTIONKEY_WARN("ConfigStore appticket '{}': forged ticket is too short to contain app id",
+                                               name);
+                        return got;
                     }
-                    LOG_DECRYPTIONKEY_WARN("Decryption key for depot {} is too large ({} bytes) for buffer ({} bytes)",
-                                            depotId, key.size(), KeySize);
+                    memcpy(forged.data.data() + AppTicket::kAppTicketAppIdOffset,
+                           &ticketAppId, sizeof(AppId_t));
+                    memcpy(Key, forged.data.data(), forged.data.size());
+                    LOG_DECRYPTIONKEY_DEBUG("ConfigStore appticket '{}': provided forged ticket ({} bytes)",
+                                            name, forged.data.size());
+                    return static_cast<int32>(forged.data.size());
+                }
+                LOG_DECRYPTIONKEY_WARN("ConfigStore appticket '{}': no donor ticket available to forge", name);
+            }
+            return got;
+        }
+
+        // Expected shape: ".../<DepotId>\DecryptionKey"
+        static constexpr std::string_view kDecryptionSuffix = "\\DecryptionKey";
+        if (size_t last = name.find(kDecryptionSuffix); last != std::string::npos &&
+            last + kDecryptionSuffix.size() == name.size()) {
+            if (size_t start = name.find_last_of("\\", last - 1); start != std::string::npos) {
+                AppId_t depotId = 0;
+                const std::string_view idText(name.data() + start + 1, last - start - 1);
+                if (ParseAppId(idText, &depotId)) {
+                    if (const auto key = LuaConfig::GetDecryptionKey(depotId); !key.empty()) {
+                        if (Key && KeySize >= key.size()) {
+                            LOG_DECRYPTIONKEY_INFO("Providing decryption key for depot {} ({} bytes)",
+                                                   depotId, key.size());
+                            memcpy(Key, key.data(), key.size());
+                            return static_cast<int32>(key.size());
+                        }
+                        LOG_DECRYPTIONKEY_WARN("Decryption key for depot {} is too large or output buffer is null ({} bytes, buffer {})",
+                                               depotId, key.size(), KeySize);
+                    }
                 }
             }
         }
