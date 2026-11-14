@@ -55,7 +55,7 @@
 - Lua-listed shared games are handled by the fake-license path; the network hook tracks the lender before clearing the borrowed flags and uses that record when processing play-state packets.
 - Games already owned by the current account retain the normal license path, even when they are also listed in Lua.
 - Shared games not listed in Lua continue to follow Steam's native sharing behavior. The library UI only fills an empty owner for Lua-listed apps when no lender was recorded.
-- `[presence] display = "spacewar"` (default) lets friends see Lua-listed games using the shortcut named by `shortcut_name` in the current Steam account's library; if it is unset or not found, Spacewar (AppId 480) is used. Set `display = "none"` to disable OpenSteamTool's friend-presence patches without changing the family-sharing handling.
+- `[presence] display = "spacewar"` (default) lets friends see Lua-listed games using the non-Steam library entry named by `broadcast_app` in the current Steam account's library; if it is unset or not found, Spacewar (AppId 480) is used. Set `display = "none"` to disable OpenSteamTool's friend-presence patches without changing the family-sharing handling.
 
 ### Compatible with games protected by Denuvo and SteamStub
 - SteamStub-only games do not require configuring `AppTicket`. OpenSteamTool can reuse Steam's local ConfigStore ticket and forge the requested AppId through a SteamDRMP off-by-four ticket parsing vulnerability, without injecting into the game process.
@@ -211,9 +211,9 @@ enable_api = true
 [presence]
 # Friend broadcast mode for Lua-listed games: "spacewar" (default) or "none".
 display = "spacewar"
-# Optional exact name of a non-Steam shortcut in the Steam library.
+# Optional name of a non-Steam library entry used for friend broadcasts.
 # Add one via Steam > Games > Add a Non-Steam Game to My Library.
-# shortcut_name = "My broadcast shortcut"
+# broadcast_app = "My broadcast app"
 
 # Additional Lua config directories (optional).
 # Files are loaded after the default <Steam>/config/lua folder.

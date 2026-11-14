@@ -19,7 +19,7 @@ namespace {
         std::string remoteUrlTemplate;
         bool statsEnableApi = true;
         std::string presenceDisplay = "spacewar";
-        std::string presenceShortcutName;
+        std::string presenceBroadcastApp;
         InjectionSettings injection;
         CloudSettings cloud;
     };
@@ -56,7 +56,7 @@ namespace {
         remoteUrlTemplate      = snapshot.remoteUrlTemplate;
         statsEnableApi         = snapshot.statsEnableApi;
         presenceDisplay        = snapshot.presenceDisplay;
-        presenceShortcutName  = snapshot.presenceShortcutName;
+        presenceBroadcastApp = snapshot.presenceBroadcastApp;
         injectEnabled          = snapshot.injection.enabled;
         injectLibraryX86       = snapshot.injection.libraryX86;
         injectLibraryX64       = snapshot.injection.libraryX64;
@@ -161,8 +161,12 @@ namespace {
                     else
                         LOG_WARN("Unknown presence.display \"{}\", keeping default \"spacewar\"", *val);
                 }
-                if (auto val = (*presence)["shortcut_name"].value<std::string>())
-                    snapshot.presenceShortcutName = *val;
+                if (auto val = (*presence)["broadcast_app"].value<std::string>())
+                    snapshot.presenceBroadcastApp = *val;
+                else if (auto val = (*presence)["shortcut_name"].value<std::string>()) {
+                    snapshot.presenceBroadcastApp = *val;
+                    LOG_WARN("presence.shortcut_name is deprecated; use presence.broadcast_app");
+                }
             }
 
             // [inject]
@@ -264,9 +268,9 @@ namespace {
         return presenceDisplay != "none";
     }
 
-    std::string GetPresenceShortcutName() {
+    std::string GetPresenceBroadcastApp() {
         std::lock_guard lock(g_mutex);
-        return presenceShortcutName;
+        return presenceBroadcastApp;
     }
 
     CloudSettings GetCloudSettings() {

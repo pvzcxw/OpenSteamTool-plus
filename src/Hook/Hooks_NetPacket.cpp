@@ -1425,12 +1425,11 @@ namespace Hooks_NetPacket_OnlineFix
         return false;
     }
 
-    // Use only the exact non-Steam shortcut name configured by the user.
-    // No arbitrary shortcut is selected; an unset or unmatched name falls
-    // back to Spacewar in the caller.
-    static uint64 FindShortcutGameId(const std::string& shortcutName)
+    // Use only the exact non-Steam library entry configured for broadcasting.
+    // An unset or unmatched name falls back to Spacewar in the caller.
+    static uint64 FindBroadcastAppGameId(const std::string& broadcastApp)
     {
-        if (shortcutName.empty() || SteamInstallPath[0] == '\0') return 0;
+        if (broadcastApp.empty() || SteamInstallPath[0] == '\0') return 0;
         const AccountID_t accountId = static_cast<AccountID_t>(
             Hooks_NetPacket_RichPresence::g_LocalSteamId & UINT32_MAX);
         if (accountId == 0) return 0;
@@ -1438,8 +1437,8 @@ namespace Hooks_NetPacket_OnlineFix
         static std::string cachedName;
         static AccountID_t cachedAccountId = 0;
         static uint64 cachedGameId = 0;
-        if (cachedName == shortcutName && cachedAccountId == accountId) return cachedGameId;
-        cachedName = shortcutName;
+        if (cachedName == broadcastApp && cachedAccountId == accountId) return cachedGameId;
+        cachedName = broadcastApp;
         cachedAccountId = accountId;
         cachedGameId = 0;
 
@@ -1477,19 +1476,19 @@ namespace Hooks_NetPacket_OnlineFix
             if (!ReadVdfCString(data, pos, entryKey)) break;
             (void)entryKey;
             std::string appName;
-            uint32 shortcutAppId = 0;
+            uint32 broadcastAppId = 0;
             bool hasAppId = false;
-            if (!ReadShortcutEntry(data, pos, appName, shortcutAppId, hasAppId)) break;
-            if (!hasAppId || appName != shortcutName) continue;
+            if (!ReadShortcutEntry(data, pos, appName, broadcastAppId, hasAppId)) break;
+            if (!hasAppId || appName != broadcastApp) continue;
 
-            cachedGameId = (static_cast<uint64>(shortcutAppId) << 32) | (2ULL << 24);
-            LOG_ONLINEFIX_INFO("Using configured shortcut '{}' for account {} (game_id=0x{:016X})",
-                               shortcutName, accountId, cachedGameId);
+            cachedGameId = (static_cast<uint64>(broadcastAppId) << 32) | (2ULL << 24);
+            LOG_ONLINEFIX_INFO("Using configured broadcast app '{}' for account {} (game_id=0x{:016X})",
+                               broadcastApp, accountId, cachedGameId);
             return cachedGameId;
         }
 
-        LOG_ONLINEFIX_WARN("Configured Steam shortcut '{}' was not found for account {}; using Spacewar",
-                           shortcutName, accountId);
+        LOG_ONLINEFIX_WARN("Configured broadcast app '{}' was not found for account {}; using Spacewar",
+                           broadcastApp, accountId);
         return 0;
     }
 
@@ -1546,14 +1545,14 @@ namespace Hooks_NetPacket_OnlineFix
                 if (!name.empty())
                 {
                     auto* topGame = msg.mutable_games_played(msg.games_played_size() - 1);
-                    const uint64 shortcutId = FindShortcutGameId(Config::GetPresenceShortcutName());
-                    topGame->set_game_id(shortcutId ? shortcutId : kOnlineFixAppId);
+                    const uint64 broadcastId = FindBroadcastAppGameId(Config::GetPresenceBroadcastApp());
+                    topGame->set_game_id(broadcastId ? broadcastId : kOnlineFixAppId);
                     topGame->set_game_extra_info(name);
                     topGame->clear_owner_id();
                     patched = true;
                     didBroadcastRewrite = true;
                     LOG_ONLINEFIX_INFO("RichPresence: appid {} -> broadcast id {} ({})",
-                                       trackedId, shortcutId ? shortcutId : kOnlineFixAppId, name);
+                                       trackedId, broadcastId ? broadcastId : kOnlineFixAppId, name);
                 }
             }
         }

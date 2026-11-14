@@ -50,7 +50,7 @@
 - Los juegos compartidos incluidos en Lua siguen la ruta de licencia falsa; el hook de red registra al prestador antes de limpiar las marcas de préstamo y consulta ese dato al procesar los paquetes del estado de juego.
 - Los juegos que ya pertenecen a la cuenta actual conservan la ruta de licencia normal, aunque también estén incluidos en Lua.
 - Los juegos compartidos que no estén incluidos en Lua siguen el comportamiento nativo de Steam. La interfaz solo completa un propietario vacío para las aplicaciones Lua cuando no se registró ningún prestador.
-- `[presence] display = "spacewar"` (predeterminado) muestra los juegos Lua a los amigos usando el acceso directo indicado por `shortcut_name` en la biblioteca de la cuenta actual; si no se configura o no se encuentra, usa Spacewar (AppId 480). Usa `display = "none"` para desactivar las modificaciones de presencia de OpenSteamTool sin cambiar el tratamiento del préstamo familiar.
+- `[presence] display = "spacewar"` (predeterminado) muestra los juegos Lua a los amigos usando la aplicación no perteneciente a Steam indicada por `broadcast_app` en la biblioteca de la cuenta actual; si no se configura o no se encuentra, usa Spacewar (AppId 480). Usa `display = "none"` para desactivar las modificaciones de presencia de OpenSteamTool sin cambiar el tratamiento del préstamo familiar.
 
 ### Compatible con juegos protegidos por Denuvo y SteamStub
 - Los juegos protegidos únicamente por SteamStub no requieren la configuración de `AppTicket`. OpenSteamTool puede reutilizar el ticket local de ConfigStore de Steam y falsificar el AppId solicitado a través de una vulnerabilidad de desbordamiento por cuatro (off-by-four ticket parsing vulnerability) en SteamDRMP, sin necesidad de inyectarse en el proceso del juego.
@@ -202,9 +202,9 @@ enable_api = true
 [presence]
 # Modo de difusión a amigos para juegos Lua: "spacewar" (predeterminado) o "none".
 display = "spacewar"
-# Nombre exacto opcional de un acceso directo no perteneciente a Steam.
-# Añádelo desde Steam > Juegos > Añadir un juego que no es de Steam a mi biblioteca.
-# shortcut_name = "Mi acceso directo"
+# Nombre opcional de una aplicación no perteneciente a Steam para difundir a amigos.
+# Añádela desde Steam > Juegos > Añadir un juego que no es de Steam a mi biblioteca.
+# broadcast_app = "Mi aplicación para difundir"
 
 # Directorio de configuración adicional de Lua (opcional).  
 # Los archivos se cargarán después de la carpeta predeterminada <Steam>/config/lua.  
