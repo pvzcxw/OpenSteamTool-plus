@@ -52,6 +52,7 @@
 - Configure `enabled`, `library_x64`, and `library_x86`; the injected library must match the target process architecture.`library_x64` and `library_x86` may be absolute paths, or relative paths resolved from the Steam root directory.
 
 ### Family Sharing and Remote Play
+> Thanks for the idea from https://github.com/huanyuejue/OpenSteamTool
 - Lua-listed shared games are handled by the fake-license path; the network hook tracks the lender before clearing the borrowed flags and uses that record when processing play-state packets.
 - Games already owned by the current account retain the normal license path, even when they are also listed in Lua.
 - Shared games not listed in Lua continue to follow Steam's native sharing behavior. The library UI only fills an empty owner for Lua-listed apps when no lender was recorded.

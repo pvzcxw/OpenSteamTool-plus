@@ -47,6 +47,7 @@
 - Configura `enabled`, `library_x64` y `library_x86`; la biblioteca inyectada debe coincidir con la arquitectura del proceso de destino.`library_x64` y `library_x86` pueden ser rutas absolutas, o rutas relativas resueltas desde el directorio raíz de Steam.
 
 ### Préstamo familiar y juego en remoto
+> Gracias https://github.com/huanyuejue/OpenSteamTool
 - Los juegos compartidos incluidos en Lua siguen la ruta de licencia falsa; el hook de red registra al prestador antes de limpiar las marcas de préstamo y consulta ese dato al procesar los paquetes del estado de juego.
 - Los juegos que ya pertenecen a la cuenta actual conservan la ruta de licencia normal, aunque también estén incluidos en Lua.
 - Los juegos compartidos que no estén incluidos en Lua siguen el comportamiento nativo de Steam. La interfaz solo completa un propietario vacío para las aplicaciones Lua cuando no se registró ningún prestador.
