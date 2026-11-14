@@ -1325,47 +1325,171 @@ namespace Hooks_NetPacket_RichPresence
 namespace Hooks_NetPacket_OnlineFix
 {
 
-    // Return a non-Steam shortcut CGameID for friend broadcasts, if one is
-    // available in any Steam userdata shortcuts.vdf file.
-    static uint64 FindShortcutGameId()
+    static bool ReadVdfCString(const std::vector<uint8>& data, size_t& pos, std::string& value)
     {
-        static uint64 cached = 0;
-        static bool tried = false;
-        if (tried || SteamInstallPath[0] == '\0')
-            return cached;
-        tried = true;
+        const size_t start = pos;
+        while (pos < data.size() && data[pos] != 0) ++pos;
+        if (pos >= data.size()) return false;
+        value.assign(reinterpret_cast<const char*>(data.data() + start), pos - start);
+        ++pos;
+        return true;
+    }
 
-        std::error_code ec;
-        const auto userdataPath = std::filesystem::path(SteamInstallPath) / "userdata";
-        for (const auto& entry : std::filesystem::directory_iterator(userdataPath, ec))
+    static bool SkipVdfValue(uint8 type, const std::vector<uint8>& data, size_t& pos, unsigned depth);
+
+    static bool SkipVdfObject(const std::vector<uint8>& data, size_t& pos, unsigned depth)
+    {
+        if (depth > 16) return false;
+        while (pos < data.size())
         {
-            if (ec) break;
-            if (!entry.is_directory(ec) || ec)
+            const uint8 fieldType = data[pos++];
+            if (fieldType == 0x08) return true;
+            std::string key;
+            if (!ReadVdfCString(data, pos, key) ||
+                !SkipVdfValue(fieldType, data, pos, depth + 1))
+                return false;
+            (void)key;
+        }
+        return false;
+    }
+
+    static bool SkipVdfValue(uint8 type, const std::vector<uint8>& data, size_t& pos, unsigned depth)
+    {
+        switch (type)
+        {
+        case 0x00: return SkipVdfObject(data, pos, depth);
+        case 0x01:
+        {
+            std::string value;
+            return ReadVdfCString(data, pos, value);
+        }
+        case 0x02:
+        case 0x03:
+        case 0x04:
+        case 0x06:
+            if (data.size() - pos < 4) return false;
+            pos += 4;
+            return true;
+        case 0x05:
+            while (pos + 1 < data.size())
             {
-                ec.clear();
-                continue;
+                const bool terminator = data[pos] == 0 && data[pos + 1] == 0;
+                pos += 2;
+                if (terminator) return true;
             }
+            return false;
+        case 0x07:
+        case 0x0A:
+            if (data.size() - pos < 8) return false;
+            pos += 8;
+            return true;
+        default:
+            return false;
+        }
+    }
 
-            std::ifstream file(entry.path() / "config" / "shortcuts.vdf", std::ios::binary);
-            if (!file) continue;
+    static bool ReadShortcutEntry(const std::vector<uint8>& data, size_t& pos,
+                                  std::string& appName, uint32& shortcutAppId,
+                                  bool& hasAppId)
+    {
+        while (pos < data.size())
+        {
+            const uint8 type = data[pos++];
+            if (type == 0x08) return true;
 
-            std::vector<uint8> data((std::istreambuf_iterator<char>(file)),
-                                    std::istreambuf_iterator<char>());
-            constexpr uint8 marker[] = {0x02, 'a', 'p', 'p', 'i', 'd', 0x00};
-            for (size_t i = 0; i + sizeof(marker) + sizeof(uint32) <= data.size(); ++i)
+            std::string key;
+            if (!ReadVdfCString(data, pos, key)) return false;
+            if (type == 0x01)
             {
-                if (std::memcmp(data.data() + i, marker, sizeof(marker)) != 0)
-                    continue;
-
-                uint32 appId = 0;
-                std::memcpy(&appId, data.data() + i + sizeof(marker), sizeof(appId));
-                cached = (static_cast<uint64>(appId) << 32) | (2ULL << 24);
-                LOG_ONLINEFIX_INFO("Using shortcut game_id=0x{:016X} for friend broadcast", cached);
-                return cached;
+                std::string value;
+                if (!ReadVdfCString(data, pos, value)) return false;
+                if (key == "appname") appName = std::move(value);
+            }
+            else if (type == 0x02)
+            {
+                if (data.size() - pos < sizeof(uint32)) return false;
+                uint32 value = 0;
+                std::memcpy(&value, data.data() + pos, sizeof(value));
+                pos += sizeof(value);
+                if (key == "appid")
+                {
+                    shortcutAppId = value;
+                    hasAppId = true;
+                }
+            }
+            else if (!SkipVdfValue(type, data, pos, 1))
+            {
+                return false;
             }
         }
+        return false;
+    }
 
-        LOG_ONLINEFIX_DEBUG("No Steam shortcut found for friend broadcast");
+    // Use only the exact non-Steam shortcut name configured by the user.
+    // No arbitrary shortcut is selected; an unset or unmatched name falls
+    // back to Spacewar in the caller.
+    static uint64 FindShortcutGameId(const std::string& shortcutName)
+    {
+        if (shortcutName.empty() || SteamInstallPath[0] == '\0') return 0;
+        const AccountID_t accountId = static_cast<AccountID_t>(
+            Hooks_NetPacket_RichPresence::g_LocalSteamId & UINT32_MAX);
+        if (accountId == 0) return 0;
+
+        static std::string cachedName;
+        static AccountID_t cachedAccountId = 0;
+        static uint64 cachedGameId = 0;
+        if (cachedName == shortcutName && cachedAccountId == accountId) return cachedGameId;
+        cachedName = shortcutName;
+        cachedAccountId = accountId;
+        cachedGameId = 0;
+
+        const auto shortcutPath = std::filesystem::path(SteamInstallPath) / "userdata" /
+                                  std::to_string(accountId) / "config" / "shortcuts.vdf";
+        std::ifstream file(shortcutPath, std::ios::binary);
+        if (!file)
+        {
+            LOG_ONLINEFIX_WARN("Cannot open shortcuts.vdf for current account; using Spacewar");
+            return 0;
+        }
+
+        const std::vector<uint8> data((std::istreambuf_iterator<char>(file)),
+                                      std::istreambuf_iterator<char>());
+        size_t pos = 0;
+        if (data.empty() || data[pos++] != 0x00)
+        {
+            LOG_ONLINEFIX_WARN("Invalid shortcuts.vdf for current account; using Spacewar");
+            return 0;
+        }
+        std::string rootName;
+        if (!ReadVdfCString(data, pos, rootName) || rootName != "shortcuts")
+        {
+            LOG_ONLINEFIX_WARN("Invalid shortcuts.vdf root; using Spacewar");
+            return 0;
+        }
+
+        while (pos < data.size())
+        {
+            const uint8 type = data[pos++];
+            if (type == 0x08) break;
+            if (type != 0x00) break;
+
+            std::string entryKey;
+            if (!ReadVdfCString(data, pos, entryKey)) break;
+            (void)entryKey;
+            std::string appName;
+            uint32 shortcutAppId = 0;
+            bool hasAppId = false;
+            if (!ReadShortcutEntry(data, pos, appName, shortcutAppId, hasAppId)) break;
+            if (!hasAppId || appName != shortcutName) continue;
+
+            cachedGameId = (static_cast<uint64>(shortcutAppId) << 32) | (2ULL << 24);
+            LOG_ONLINEFIX_INFO("Using configured shortcut '{}' for account {} (game_id=0x{:016X})",
+                               shortcutName, accountId, cachedGameId);
+            return cachedGameId;
+        }
+
+        LOG_ONLINEFIX_WARN("Configured Steam shortcut '{}' was not found for account {}; using Spacewar",
+                           shortcutName, accountId);
         return 0;
     }
 
@@ -1422,7 +1546,7 @@ namespace Hooks_NetPacket_OnlineFix
                 if (!name.empty())
                 {
                     auto* topGame = msg.mutable_games_played(msg.games_played_size() - 1);
-                    const uint64 shortcutId = FindShortcutGameId();
+                    const uint64 shortcutId = FindShortcutGameId(Config::GetPresenceShortcutName());
                     topGame->set_game_id(shortcutId ? shortcutId : kOnlineFixAppId);
                     topGame->set_game_extra_info(name);
                     topGame->clear_owner_id();

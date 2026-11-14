@@ -67,11 +67,14 @@ enable_api = true
 
 [presence]
 # Friend broadcast mode for Lua-listed games: "spacewar" (default) or "none".
-# In "spacewar" mode, the game name is sent using a Steam shortcut when one is
-# available; otherwise Spacewar (AppId 480) is used as the broadcast identity.
+# In "spacewar" mode, the game name is sent using the exact Steam shortcut
+# configured below; if unset or not found, Spacewar (AppId 480) is used.
 # "none" disables OpenSteamTool's friend-presence patches; native Steam
 # reporting and the family-sharing handling continue as usual.
 display = "spacewar"
+# Exact display name of a non-Steam shortcut in the current account's library.
+# Add one via Steam > Games > Add a Non-Steam Game to My Library.
+# shortcut_name = "My broadcast shortcut"
 
 # Additional Lua config directories (optional).
 # Files are loaded after the default <Steam>/config/lua folder.

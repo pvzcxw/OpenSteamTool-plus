@@ -19,6 +19,7 @@ namespace {
         std::string remoteUrlTemplate;
         bool statsEnableApi = true;
         std::string presenceDisplay = "spacewar";
+        std::string presenceShortcutName;
         InjectionSettings injection;
         CloudSettings cloud;
     };
@@ -55,6 +56,7 @@ namespace {
         remoteUrlTemplate      = snapshot.remoteUrlTemplate;
         statsEnableApi         = snapshot.statsEnableApi;
         presenceDisplay        = snapshot.presenceDisplay;
+        presenceShortcutName  = snapshot.presenceShortcutName;
         injectEnabled          = snapshot.injection.enabled;
         injectLibraryX86       = snapshot.injection.libraryX86;
         injectLibraryX64       = snapshot.injection.libraryX64;
@@ -159,6 +161,8 @@ namespace {
                     else
                         LOG_WARN("Unknown presence.display \"{}\", keeping default \"spacewar\"", *val);
                 }
+                if (auto val = (*presence)["shortcut_name"].value<std::string>())
+                    snapshot.presenceShortcutName = *val;
             }
 
             // [inject]
@@ -258,6 +262,11 @@ namespace {
     bool GetPresenceBroadcastEnabled() {
         std::lock_guard lock(g_mutex);
         return presenceDisplay != "none";
+    }
+
+    std::string GetPresenceShortcutName() {
+        std::lock_guard lock(g_mutex);
+        return presenceShortcutName;
     }
 
     CloudSettings GetCloudSettings() {
