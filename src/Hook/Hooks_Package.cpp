@@ -3,7 +3,6 @@
 #include "Hooks_SteamUI.h"
 #include "dllmain.h"
 #include "Utils/HookSupport/VehCommon.h"
-#include <limits>
 #include <unordered_set>
 
 namespace {
@@ -47,18 +46,7 @@ namespace {
         return oCUtlMemoryGrow(pVec, grow_size);
     }
 
-    template <typename T>
-    bool IsWellFormedVector(const CUtlVector<T>& vec) {
-        return vec.m_Size <= vec.m_Memory.m_nAllocationCount &&
-               (vec.m_Memory.m_nAllocationCount == 0 || vec.m_Memory.m_pMemory != nullptr);
-    }
-
     bool InitFakeLicenseOnce(PackageInfo* pPkg) {
-        if (!pPkg || !IsWellFormedVector(pPkg->AppIdVec) ||
-            !IsWellFormedVector(pPkg->DepotIdVec)) {
-            LOG_PACKAGE_WARN("InitFakeLicenseOnce: package app/depot vectors have invalid layout; skipping injection");
-            return false;
-        }
         // check package status before injecting
         if (pPkg->Status != EPackageStatus::Available) {
             LOG_PACKAGE_WARN("InitFakeLicenseOnce: package status is not Available ({}), skipping injection", static_cast<int>(pPkg->Status));
@@ -69,31 +57,14 @@ namespace {
         std::vector<AppId_t> appIds = LuaConfig::GetAllDepotIds();
         if (!appIds.empty()) {
             uint32 oldSize = pPkg->AppIdVec.m_Size;
-            if (appIds.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
-                appIds.size() > static_cast<size_t>(UINT32_MAX - oldSize)) {
-                LOG_PACKAGE_WARN("InitFakeLicense(PackageId={}): {} app ids exceed AppIdVec capacity limits",
-                                 kInjectedPackageId, appIds.size());
-                return false;
-            }
             uint32 numToAdd = static_cast<uint32>(appIds.size());
             LOG_PACKAGE_INFO("InitFakeLicense(PackageId={}): adding {} apps, oldSize={}", kInjectedPackageId, numToAdd, oldSize);
             if (!CUtlMemoryGrowWrap(&pPkg->AppIdVec, numToAdd)) {
                 LOG_PACKAGE_WARN("InitFakeLicense(PackageId={}): failed to grow AppId vector", kInjectedPackageId);
                 return false;
             }
-            const uint32 expectedSize = oldSize + numToAdd;
-            if (!IsWellFormedVector(pPkg->AppIdVec) ||
-                pPkg->AppIdVec.m_Memory.m_nAllocationCount < expectedSize) {
-                LOG_PACKAGE_WARN("InitFakeLicense(PackageId={}): AppIdVec growth did not reserve the requested entries",
-                                 kInjectedPackageId);
-                return false;
-            }
             for (uint32 i = 0; i < numToAdd; i++)
                 pPkg->AppIdVec.m_Memory.m_pMemory[oldSize + i] = appIds[i];
-            // CUtlMemoryGrow grows storage but does not increase the vector's
-            // logical length. Without this, Steam's AppIdVec traversal ignores
-            // the injected entries and BuildDepotDependency can see zero depots.
-            pPkg->AppIdVec.m_Size = expectedSize;
         }
 
         g_licenseInitialized = true;
@@ -171,12 +142,6 @@ namespace Hooks_Package {
         }
 
         // ── Remove depots that were unloaded ──
-        if (!IsWellFormedVector(pPkg->AppIdVec) ||
-            !IsWellFormedVector(pPkg->DepotIdVec)) {
-            LOG_PACKAGE_WARN("NotifyLicenseChanged: package app/depot vectors have invalid layout; skipping update");
-            return;
-        }
-
         std::vector<AppId_t> removals = LuaConfig::TakePendingRemovals();
         LOG_PACKAGE_DEBUG("NotifyLicenseChanged: processing {} removals", removals.size());
         uint32_t removedCount = 0;
@@ -195,15 +160,7 @@ namespace Hooks_Package {
         LOG_PACKAGE_DEBUG("NotifyLicenseChanged: processing {} additions", additions.size());
         if (!additions.empty()) {
             uint32_t oldSize = pPkg->AppIdVec.m_Size;
-            if (additions.size() <= static_cast<size_t>(std::numeric_limits<int>::max()) &&
-                additions.size() <= static_cast<size_t>(UINT32_MAX - oldSize) &&
-                CUtlMemoryGrowWrap(&pPkg->AppIdVec, static_cast<int>(additions.size()))) {
-                const uint32_t expectedSize = oldSize + static_cast<uint32_t>(additions.size());
-                if (!IsWellFormedVector(pPkg->AppIdVec) ||
-                    pPkg->AppIdVec.m_Memory.m_nAllocationCount < expectedSize) {
-                    LOG_PACKAGE_WARN("NotifyLicenseChanged: AppIdVec growth did not reserve the requested entries");
-                    return;
-                }
+            if (CUtlMemoryGrowWrap(&pPkg->AppIdVec, additions.size())) {
                 // An applied addition invalidates any UI removal that has not
                 // reached the UI thread yet.
                 for (AppId_t id : additions)
@@ -214,9 +171,6 @@ namespace Hooks_Package {
                     addedIds.insert(additions[i]);
                     LOG_PACKAGE_DEBUG("NotifyLicenseChanged: inserted AppId {} at [{}]", additions[i], oldSize + i);
                 }
-                // As above, reserve capacity first and publish the enlarged
-                // vector length only after every new entry has been written.
-                pPkg->AppIdVec.m_Size = expectedSize;
             }else {
                 LOG_PACKAGE_WARN("NotifyLicenseChanged: failed to grow AppId vector for additions");
             }
