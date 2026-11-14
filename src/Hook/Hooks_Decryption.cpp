@@ -66,12 +66,18 @@ namespace {
         // 假入库的游戏本地没有票，用一张真实票据改出目标 appid 补上，
         // 签名段保持原样，壳按老版本的解析方式能对得上。
         static constexpr std::string_view kTicketPrefix = "apptickets\\";
-        if (name.rfind(kTicketPrefix, 0) == 0) {
+        if (eConfigStore == k_EConfigStoreUserLocal &&
+            name.rfind(kTicketPrefix, 0) == 0) {
             const int32 got = oConfigStoreGetBinary(pObject, eConfigStore, KeyName, Key, KeySize);
+            if (got > 0) {
+                if (Key && static_cast<uint32>(got) <= KeySize)
+                    HarvestAppticket(name, Key, static_cast<size_t>(got));
+                return got;
+            }
             AppId_t ticketAppId = 0;
             const std::string_view suffix(name.data() + kTicketPrefix.size(),
                                           name.size() - kTicketPrefix.size());
-            if (got > 0 || !ParseAppId(suffix, &ticketAppId)) return got;
+            if (!ParseAppId(suffix, &ticketAppId)) return got;
             LOG_DECRYPTIONKEY_DEBUG("ConfigStore appticket '{}': ret={}", name, got);
 
             if (Key && KeySize != 0 &&
@@ -104,12 +110,12 @@ namespace {
 
         // Expected shape: ".../<DepotId>\DecryptionKey"
         static constexpr std::string_view kDecryptionSuffix = "\\DecryptionKey";
-        if (size_t last = name.find(kDecryptionSuffix); last != std::string::npos &&
+        if (size_t last = name.find(kDecryptionSuffix); last != std::string::npos && last > 0 &&
             last + kDecryptionSuffix.size() == name.size()) {
             if (size_t start = name.find_last_of("\\", last - 1); start != std::string::npos) {
                 AppId_t depotId = 0;
-                const std::string_view idText(name.data() + start + 1, last - start - 1);
-                if (ParseAppId(idText, &depotId)) {
+                if (start + 1 < last &&
+                    ParseAppId(std::string_view(name.data() + start + 1, last - start - 1), &depotId)) {
                     if (const auto key = LuaConfig::GetDecryptionKey(depotId); !key.empty()) {
                         if (Key && KeySize >= key.size()) {
                             LOG_DECRYPTIONKEY_INFO("Providing decryption key for depot {} ({} bytes)",
