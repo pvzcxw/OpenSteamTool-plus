@@ -1,11 +1,8 @@
 #include "Hooks_SteamUI.h"
-#include "Hooks_Package.h"
 #include "HookManager.h"
 #include "HookMacros.h"
 #include "dllmain.h"
 #include "steam_messages.pb.h"
-#include "OSTPlatform/include/SteamCredentialStore.h"
-#include <atomic>
 #include "Utils/HookSupport/VehCommon.h"
 #include <mutex>
 #include <unordered_set>
@@ -18,32 +15,10 @@ namespace
     CAPTURE_THIS_FUNC(GetAppByID, CSteamApp*, g_pController,void* pThis, AppId_t appId, bool bCreate);
     CAPTURE_THIS_FUNC(MarkAppChange,void*,g_pAppChangeSource,void* pThis,AppId_t appId, EAppChangeFlags changeFlags);
 
-    std::atomic<uint32_t> g_selfAccountId{0};
-
     HOOK_FUNC(FillInAppOverview, void *, void *pThis, void *pAppOverview, CSteamApp *pApp)
     {
         if (pApp && LuaConfig::HasDepot(pApp->nAppID, false))
         {
-            if (pApp->SteamID.GetAccountID() == 0 &&
-                Hooks_Package::GetFamilySharedOwner(pApp->nAppID) == 0)
-            {
-                uint32_t selfAccount = g_selfAccountId.load(std::memory_order_relaxed);
-                if (selfAccount == 0)
-                {
-                    std::wstring universe;
-                    if (OSTPlatform::SteamCredentialStore::GetActiveUser(selfAccount, universe) ==
-                        OSTPlatform::SteamCredentialStore::Status::Ok)
-                        g_selfAccountId.store(selfAccount, std::memory_order_relaxed);
-                }
-
-                if (selfAccount != 0)
-                {
-                    pApp->SteamID.Set(selfAccount, k_EUniversePublic, k_EAccountTypeIndividual);
-                    LOG_STEAMUI_DEBUG("FillInAppOverview: appId={} owner set to self ({})",
-                                      pApp->nAppID, selfAccount);
-                }
-            }
-
             uint32_t t = LuaConfig::GetPurchaseTime(pApp->nAppID);
             if (t)
             {
@@ -132,7 +107,6 @@ namespace Hooks_SteamUI
 
     void Uninstall()
     {
-        g_selfAccountId.store(0, std::memory_order_relaxed);
         UNHOOK_BEGIN();
         UNINSTALL_HOOK(FillInAppOverview);
         UNINSTALL_HOOK(BuildCompleteAppOverviewChange);

@@ -1,7 +1,6 @@
 #include "Hooks_NetPacket.h"
 #include "Utils/SteamMetadata/ManifestClient.h"
 #include "Hooks_Misc.h"
-#include "Hooks_Package.h"
 #include "HookMacros.h"
 #include "dllmain.h"
 #include "Hook/Hooks_Decryption.h"
@@ -13,11 +12,7 @@
 #include <atomic>
 #include <cstring>
 #include <deque>
-#include <filesystem>
-#include <fstream>
-#include <format>
 #include <future>
-#include <iterator>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -645,38 +640,11 @@ namespace Hooks_NetPacket_ETicket
 namespace Hooks_NetPacket_FamilySharing
 {
 
-    void LogStopPlaying(const uint8* pBody, uint32 cbBody)
+    void ClearBody(const uint8 *, uint32)
     {
-        CMsgClientSharedLibraryStopPlaying msg;
-        if (!msg.ParseFromArray(pBody, static_cast<int>(cbBody)))
-        {
-            LOG_NETPACKET_WARN("FamilySharing: StopPlaying body unparsable ({} bytes)", cbBody);
-            return;
-        }
-
-        constexpr int kMaxLogged = 8;
-        std::string detail;
-        for (int i = 0; i < msg.stop_apps_size() && i < kMaxLogged; ++i)
-        {
-            const auto& app = msg.stop_apps(i);
-            if (!detail.empty()) detail += ", ";
-            detail += std::format("app_id={} owner_id={}",
-                                  app.has_app_id() ? app.app_id() : 0,
-                                  app.has_owner_id() ? app.owner_id() : 0);
-        }
-        if (msg.stop_apps_size() > kMaxLogged)
-            detail += std::format(", ...(+{})", msg.stop_apps_size() - kMaxLogged);
-
-        LOG_NETPACKET_INFO("FamilySharing: StopPlaying seconds_left={} stop_apps=[{}]",
-                           msg.has_seconds_left() ? msg.seconds_left() : -1, detail);
-    }
-
-    void LogRunningApps(const uint8* pBody, uint32 cbBody)
-    {
-        CFamilyGroupsClient_NotifyRunningApps_Notification notify;
-        if (!notify.ParseFromArray(pBody, static_cast<int>(cbBody))) return;
-        LOG_NETPACKET_DEBUG("FamilySharing: NotifyRunningApps (family_groupid {}, {} running apps)",
-                            notify.family_groupid(), notify.running_apps_size());
+        LOG_NETPACKET_DEBUG("Clearing family sharing message...");
+        g_cbNewBody = 0;
+        g_NeedReplaceBody = true;
     }
 
 } // namespace Hooks_NetPacket_FamilySharing
@@ -978,13 +946,6 @@ namespace Hooks_NetPacket_RichPresence
     // CMsgClientRichPresenceUpload.  Per-AppId so a multi-game stack
     // does not conflate KV state.
     std::unordered_map<AppId_t, std::vector<std::pair<std::string, std::string>>> g_RPKvsByAppId;
-    bool g_LastBroadcastEnabled = true;
-    bool g_BroadcastStateInitialized = false;
-
-    static bool BroadcastEnabled()
-    {
-        return Config::GetPresenceBroadcastEnabled();
-    }
 
     // Walk Steam's binary KV1 stream (a top-level "RP" struct around
     // string KVs) and collect every string KV at any depth.  Type 0x00
@@ -1154,7 +1115,7 @@ namespace Hooks_NetPacket_RichPresence
         LOG_RICHPRESENCE_DEBUG("RP upload appid={}: kv_bytes={} extracted={} pairs",
                                g_PlayingAppId, kv.size(), kvs.size());
 
-        if (BroadcastEnabled() && BuildInject(g_PlayingAppId))
+        if (BuildInject(g_PlayingAppId))
             g_InjectPending = true;
     }
 
@@ -1189,37 +1150,15 @@ namespace Hooks_NetPacket_RichPresence
         if (topmost != 0 && topmost != kOnlineFixAppId && LuaConfig::HasDepot(topmost))
             newTracked = topmost;
 
-        const bool broadcastEnabled = BroadcastEnabled();
-        const bool broadcastChanged = g_BroadcastStateInitialized &&
-                                      g_LastBroadcastEnabled != broadcastEnabled;
-        g_LastBroadcastEnabled = broadcastEnabled;
-        g_BroadcastStateInitialized = true;
-        const bool trackedChanged = g_PlayingAppId != newTracked;
-        if (!trackedChanged && !broadcastChanged)
+        if (g_PlayingAppId == newTracked)
             return;
-
         AppId_t oldTracked = g_PlayingAppId;
-        if (trackedChanged)
-            g_PlayingAppId = newTracked;
+        g_PlayingAppId = newTracked;
 
-        if (trackedChanged && oldTracked != 0)
+        if (oldTracked != 0)
             CloudRedirectHost::NotifyAppRunning(oldTracked, false);
-        if (trackedChanged && newTracked != 0)
+        if (newTracked != 0)
             CloudRedirectHost::NotifyAppRunning(newTracked, true);
-
-        if (!broadcastEnabled)
-        {
-            if (broadcastChanged)
-            {
-                g_InjectPending = false;
-                if (BuildInject(0))
-                {
-                    g_InjectPending = true;
-                    LOG_RICHPRESENCE_INFO("Friend broadcast disabled; scheduling status clear");
-                }
-            }
-            return;
-        }
 
         if (newTracked != 0)
         {
@@ -1278,7 +1217,7 @@ namespace Hooks_NetPacket_RichPresence
             g_HaveSelfCached = true;
         }
 
-        if (!BroadcastEnabled() || g_PlayingAppId == 0)
+        if (g_PlayingAppId == 0)
             return false;
 
         ApplyGameFields(msg, selfEntry, g_PlayingAppId);
@@ -1325,173 +1264,6 @@ namespace Hooks_NetPacket_RichPresence
 namespace Hooks_NetPacket_OnlineFix
 {
 
-    static bool ReadVdfCString(const std::vector<uint8>& data, size_t& pos, std::string& value)
-    {
-        const size_t start = pos;
-        while (pos < data.size() && data[pos] != 0) ++pos;
-        if (pos >= data.size()) return false;
-        value.assign(reinterpret_cast<const char*>(data.data() + start), pos - start);
-        ++pos;
-        return true;
-    }
-
-    static bool SkipVdfValue(uint8 type, const std::vector<uint8>& data, size_t& pos, unsigned depth);
-
-    static bool SkipVdfObject(const std::vector<uint8>& data, size_t& pos, unsigned depth)
-    {
-        if (depth > 16) return false;
-        while (pos < data.size())
-        {
-            const uint8 fieldType = data[pos++];
-            if (fieldType == 0x08) return true;
-            std::string key;
-            if (!ReadVdfCString(data, pos, key) ||
-                !SkipVdfValue(fieldType, data, pos, depth + 1))
-                return false;
-            (void)key;
-        }
-        return false;
-    }
-
-    static bool SkipVdfValue(uint8 type, const std::vector<uint8>& data, size_t& pos, unsigned depth)
-    {
-        switch (type)
-        {
-        case 0x00: return SkipVdfObject(data, pos, depth);
-        case 0x01:
-        {
-            std::string value;
-            return ReadVdfCString(data, pos, value);
-        }
-        case 0x02:
-        case 0x03:
-        case 0x04:
-        case 0x06:
-            if (data.size() - pos < 4) return false;
-            pos += 4;
-            return true;
-        case 0x05:
-            while (pos + 1 < data.size())
-            {
-                const bool terminator = data[pos] == 0 && data[pos + 1] == 0;
-                pos += 2;
-                if (terminator) return true;
-            }
-            return false;
-        case 0x07:
-        case 0x0A:
-            if (data.size() - pos < 8) return false;
-            pos += 8;
-            return true;
-        default:
-            return false;
-        }
-    }
-
-    static bool ReadShortcutEntry(const std::vector<uint8>& data, size_t& pos,
-                                  std::string& appName, uint32& shortcutAppId,
-                                  bool& hasAppId)
-    {
-        while (pos < data.size())
-        {
-            const uint8 type = data[pos++];
-            if (type == 0x08) return true;
-
-            std::string key;
-            if (!ReadVdfCString(data, pos, key)) return false;
-            if (type == 0x01)
-            {
-                std::string value;
-                if (!ReadVdfCString(data, pos, value)) return false;
-                if (key == "appname") appName = std::move(value);
-            }
-            else if (type == 0x02)
-            {
-                if (data.size() - pos < sizeof(uint32)) return false;
-                uint32 value = 0;
-                std::memcpy(&value, data.data() + pos, sizeof(value));
-                pos += sizeof(value);
-                if (key == "appid")
-                {
-                    shortcutAppId = value;
-                    hasAppId = true;
-                }
-            }
-            else if (!SkipVdfValue(type, data, pos, 1))
-            {
-                return false;
-            }
-        }
-        return false;
-    }
-
-    // Use only the exact non-Steam library entry configured for broadcasting.
-    // An unset or unmatched name falls back to Spacewar in the caller.
-    static uint64 FindBroadcastAppGameId(const std::string& broadcastApp)
-    {
-        if (broadcastApp.empty() || SteamInstallPath[0] == '\0') return 0;
-        const AccountID_t accountId = static_cast<AccountID_t>(
-            Hooks_NetPacket_RichPresence::g_LocalSteamId & UINT32_MAX);
-        if (accountId == 0) return 0;
-
-        static std::string cachedName;
-        static AccountID_t cachedAccountId = 0;
-        static uint64 cachedGameId = 0;
-        if (cachedName == broadcastApp && cachedAccountId == accountId) return cachedGameId;
-        cachedName = broadcastApp;
-        cachedAccountId = accountId;
-        cachedGameId = 0;
-
-        const auto shortcutPath = std::filesystem::path(SteamInstallPath) / "userdata" /
-                                  std::to_string(accountId) / "config" / "shortcuts.vdf";
-        std::ifstream file(shortcutPath, std::ios::binary);
-        if (!file)
-        {
-            LOG_ONLINEFIX_WARN("Cannot open shortcuts.vdf for current account; using Spacewar");
-            return 0;
-        }
-
-        const std::vector<uint8> data((std::istreambuf_iterator<char>(file)),
-                                      std::istreambuf_iterator<char>());
-        size_t pos = 0;
-        if (data.empty() || data[pos++] != 0x00)
-        {
-            LOG_ONLINEFIX_WARN("Invalid shortcuts.vdf for current account; using Spacewar");
-            return 0;
-        }
-        std::string rootName;
-        if (!ReadVdfCString(data, pos, rootName) || rootName != "shortcuts")
-        {
-            LOG_ONLINEFIX_WARN("Invalid shortcuts.vdf root; using Spacewar");
-            return 0;
-        }
-
-        while (pos < data.size())
-        {
-            const uint8 type = data[pos++];
-            if (type == 0x08) break;
-            if (type != 0x00) break;
-
-            std::string entryKey;
-            if (!ReadVdfCString(data, pos, entryKey)) break;
-            (void)entryKey;
-            std::string appName;
-            uint32 broadcastAppId = 0;
-            bool hasAppId = false;
-            if (!ReadShortcutEntry(data, pos, appName, broadcastAppId, hasAppId)) break;
-            if (!hasAppId || appName != broadcastApp) continue;
-
-            cachedGameId = (static_cast<uint64>(broadcastAppId) << 32) | (2ULL << 24);
-            LOG_ONLINEFIX_INFO("Using configured broadcast app '{}' for account {} (game_id=0x{:016X})",
-                               broadcastApp, accountId, cachedGameId);
-            return cachedGameId;
-        }
-
-        LOG_ONLINEFIX_WARN("Configured broadcast app '{}' was not found for account {}; using Spacewar",
-                           broadcastApp, accountId);
-        return 0;
-    }
-
     bool HandleSend(const uint8 *pBody, uint32 cbBody,
                     const uint8 *pHdr, uint32 cbHdr)
     {
@@ -1505,9 +1277,7 @@ namespace Hooks_NetPacket_OnlineFix
 
         Hooks_NetPacket_RichPresence::TrackSend(msg, pHdr, cbHdr);
 
-        const bool broadcast = Config::GetPresenceBroadcastEnabled();
         bool patched = false;
-        bool didBroadcastRewrite = false;
         for (int i = 0; i < msg.games_played_size(); ++i)
         {
             auto *game = msg.mutable_games_played(i);
@@ -1515,83 +1285,21 @@ namespace Hooks_NetPacket_OnlineFix
 
             // SpawnProcess rewrites pGameID to 480, so game_id is already 480.
             // Fill game_extra_info with the real game name.
-            if (broadcast && appid == kOnlineFixAppId)
+            if (appid == kOnlineFixAppId)
             {
                 AppId_t realAppId = Hooks_Misc::ResolveAppId();
-                if (realAppId && realAppId != kOnlineFixAppId)
+                if (realAppId && LuaConfig::HasDepot(realAppId))
                 {
                     std::string name = Hooks_Misc::GetGameNameByAppID(realAppId);
                     if (!name.empty())
                     {
                         game->set_game_extra_info(name);
                         patched = true;
-                        didBroadcastRewrite = true;
                         LOG_ONLINEFIX_INFO("OnlineFix: 480 -> name '{}' (real appid {})",
                                            name, realAppId);
                     }
                 }
             }
-        }
-
-        // When enabled, report an unlocked game as a configured Steam
-        // shortcut (or Spacewar when there is no shortcut), carrying its
-        // display name separately so the real AppId remains hidden.
-        if (broadcast && !didBroadcastRewrite)
-        {
-            const AppId_t trackedId = Hooks_NetPacket_RichPresence::g_PlayingAppId;
-            if (trackedId != 0 && trackedId != kOnlineFixAppId && msg.games_played_size() > 0)
-            {
-                std::string name = Hooks_Misc::GetGameNameByAppID(trackedId);
-                if (!name.empty())
-                {
-                    auto* topGame = msg.mutable_games_played(msg.games_played_size() - 1);
-                    const uint64 broadcastId = FindBroadcastAppGameId(Config::GetPresenceBroadcastApp());
-                    topGame->set_game_id(broadcastId ? broadcastId : kOnlineFixAppId);
-                    topGame->set_game_extra_info(name);
-                    topGame->clear_owner_id();
-                    patched = true;
-                    didBroadcastRewrite = true;
-                    LOG_ONLINEFIX_INFO("RichPresence: appid {} -> broadcast id {} ({})",
-                                       trackedId, broadcastId ? broadcastId : kOnlineFixAppId, name);
-                }
-            }
-        }
-
-        for (int i = 0; i < msg.games_played_size(); ++i)
-        {
-            auto* game = msg.mutable_games_played(i);
-            const AppId_t playedAppId = static_cast<AppId_t>(game->game_id() & UINT32_MAX);
-            const AccountID_t reportedOwner = game->has_owner_id() ? game->owner_id() : 0;
-            const AccountID_t lender = Hooks_Package::GetFamilySharedOwner(playedAppId);
-            const bool inLua = LuaConfig::HasDepot(playedAppId, true);
-
-            if (lender > 1 && inLua)
-            {
-                game->set_game_id(kFamilySharedMaskAppId);
-                game->clear_game_extra_info();
-                game->clear_owner_id();
-                patched = true;
-                LOG_ONLINEFIX_INFO("FamilySharing: appid {} -> {} (shared+lua, lender {})",
-                                   playedAppId, kFamilySharedMaskAppId, lender);
-                continue;
-            }
-
-            if (inLua)
-            {
-                if (reportedOwner != 0)
-                {
-                    game->clear_owner_id();
-                    patched = true;
-                }
-                continue;
-            }
-
-            if (lender <= 1 || reportedOwner == lender) continue;
-
-            game->set_owner_id(lender);
-            patched = true;
-            LOG_ONLINEFIX_INFO("FamilySharing: restoring owner_id {} -> {} for appid {}",
-                               reportedOwner, lender, playedAppId);
         }
 
         if (!patched)
@@ -1921,7 +1629,7 @@ namespace
         {
 
         case HASH_JOB_NotifyRunningApps:
-            Hooks_NetPacket_FamilySharing::LogRunningApps(pBody, cbBody);
+            Hooks_NetPacket_FamilySharing::ClearBody(pBody, cbBody);
             return;
 
         case HASH_JOB_GetUserStats:
@@ -1933,13 +1641,6 @@ namespace
             return;
 
             // ---- add new 147 service methods here ----
-        default:
-            if (std::strstr(targetJobName, "NotifyRunningApps") != nullptr)
-            {
-                Hooks_NetPacket_FamilySharing::LogRunningApps(pBody, cbBody);
-                return;
-            }
-            break;
         }
     }
 
@@ -1979,7 +1680,7 @@ namespace
             return;
 
         case k_EMsgClientSharedLibraryStopPlaying: // 9406
-            Hooks_NetPacket_FamilySharing::LogStopPlaying(pBody, cbBody);
+            Hooks_NetPacket_FamilySharing::ClearBody(pBody, cbBody);
             return;
 
         case k_EMsgClientPersonaState: // 766

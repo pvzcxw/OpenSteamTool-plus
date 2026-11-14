@@ -47,11 +47,7 @@
 - Configura `enabled`, `library_x64` y `library_x86`; la biblioteca inyectada debe coincidir con la arquitectura del proceso de destino.`library_x64` y `library_x86` pueden ser rutas absolutas, o rutas relativas resueltas desde el directorio raíz de Steam.
 
 ### Préstamo familiar y juego en remoto
-> Gracias https://github.com/huanyuejue/OpenSteamTool
-- Los juegos compartidos incluidos en Lua siguen la ruta de licencia falsa; el hook de red registra al prestador antes de limpiar las marcas de préstamo y consulta ese dato al procesar los paquetes del estado de juego.
-- Los juegos que ya pertenecen a la cuenta actual conservan la ruta de licencia normal, aunque también estén incluidos en Lua.
-- Los juegos compartidos que no estén incluidos en Lua siguen el comportamiento nativo de Steam. La interfaz solo completa un propietario vacío para las aplicaciones Lua cuando no se registró ningún prestador.
-- `[presence] display = "spacewar"` (predeterminado) muestra los juegos Lua a los amigos usando la aplicación no perteneciente a Steam indicada por `broadcast_app` en la biblioteca de la cuenta actual; si no se configura o no se encuentra, usa Spacewar (AppId 480). Usa `display = "none"` para desactivar las modificaciones de presencia de OpenSteamTool sin cambiar el tratamiento del préstamo familiar.
+- Omite las restricciones de Steam Family Sharing para los juegos que se hayan añadido a la biblioteca con `addappid` en Lua. Todas las cuentas de la familia de Steam que participen en el préstamo familiar deben usar OpenSteamTool para que esto funcione.
 
 ### Compatible con juegos protegidos por Denuvo y SteamStub
 - Los juegos protegidos únicamente por SteamStub no requieren la configuración de `AppTicket`. OpenSteamTool puede reutilizar el ticket local de ConfigStore de Steam y falsificar el AppId solicitado a través de una vulnerabilidad de desbordamiento por cuatro (off-by-four ticket parsing vulnerability) en SteamDRMP, sin necesidad de inyectarse en el proceso del juego.
@@ -199,13 +195,6 @@ timeout_recv_ms    = 10000
 # Cuando no se ha configurado la función Lua setStat(appid, "steamid"), se consulta automáticamente https://stats.luastools.xyz/{appid} para obtener el SteamID recomendado.  
 # Prioridad: cuando está activada y funcional, setStat > API de estadísticas > SteamID predeterminado fijo.
 enable_api = true
-
-[presence]
-# Modo de difusión a amigos para juegos Lua: "spacewar" (predeterminado) o "none".
-display = "spacewar"
-# Nombre opcional de una aplicación no perteneciente a Steam para difundir a amigos.
-# Añádela desde Steam > Juegos > Añadir un juego que no es de Steam a mi biblioteca.
-# broadcast_app = "Mi aplicación para difundir"
 
 # Directorio de configuración adicional de Lua (opcional).  
 # Los archivos se cargarán después de la carpeta predeterminada <Steam>/config/lua.  
