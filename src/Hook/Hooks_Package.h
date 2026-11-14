@@ -12,4 +12,7 @@ namespace Hooks_Package
     // Mark package 0 as changed and trigger CClientAppManager_ProcessPendingLicenseUpdates.
     void NotifyLicenseChanged();
 
+    // Returns the remembered family lender account ID for an AppId, or 0 if none.
+    AccountID_t GetFamilySharedOwner(AppId_t appId);
+
 }

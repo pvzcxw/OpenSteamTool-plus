@@ -41,6 +41,8 @@ namespace Config {
     InjectionSettings GetInjectionSettings();
     CloudSettings GetCloudSettings();
     bool GetStatsEnableApi();
+    bool GetPresenceBroadcastEnabled();
+    std::string GetPresenceBroadcastApp();
 
     // [manifest] — provider selection lives in ManifestClient (table-driven).
     inline uint32_t manifestTimeoutResolve = 5000;
@@ -62,6 +64,11 @@ namespace Config {
 
     // [stats]
     inline bool statsEnableApi = true;
+
+    // [presence] - broadcast games added through Lua to Steam friends.
+    // "spacewar" enables display patches; "none" keeps native broadcasts.
+    inline std::string presenceDisplay = "spacewar";
+    inline std::string presenceBroadcastApp;
 
     // [inject] - optional library injection into game processes.
     inline bool injectEnabled = false;

@@ -18,6 +18,8 @@ namespace {
         std::vector<std::string> luaPaths;
         std::string remoteUrlTemplate;
         bool statsEnableApi = true;
+        std::string presenceDisplay = "spacewar";
+        std::string presenceBroadcastApp;
         InjectionSettings injection;
         CloudSettings cloud;
     };
@@ -53,6 +55,8 @@ namespace {
         luaPaths               = snapshot.luaPaths;
         remoteUrlTemplate      = snapshot.remoteUrlTemplate;
         statsEnableApi         = snapshot.statsEnableApi;
+        presenceDisplay        = snapshot.presenceDisplay;
+        presenceBroadcastApp = snapshot.presenceBroadcastApp;
         injectEnabled          = snapshot.injection.enabled;
         injectLibraryX86       = snapshot.injection.libraryX86;
         injectLibraryX64       = snapshot.injection.libraryX64;
@@ -85,11 +89,12 @@ namespace {
             LOG_INFO("Config file not found, using defaults");
             ApplyManifestProvider(snapshot.manifestProvider);
             LoadResult result = ApplySnapshotLocked(snapshot);
-            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} remote.url_template={}",
+            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} presence.display={} remote.url_template={}",
                      ManifestClient::ActiveProviderName(),
                      ToString(GetLogLevel()),
                      (uint32_t)GetLuaPaths().size(),
                      GetStatsEnableApi(),
+                     GetPresenceBroadcastEnabled() ? "spacewar" : "none",
                      GetRemoteUrlTemplate().empty() ? "<default>" : GetRemoteUrlTemplate());
             return result;
         }
@@ -148,6 +153,22 @@ namespace {
                 }
             }
 
+            // [presence]
+            if (auto presence = tbl["presence"].as_table()) {
+                if (auto val = (*presence)["display"].value<std::string>()) {
+                    if (*val == "spacewar" || *val == "none")
+                        snapshot.presenceDisplay = *val;
+                    else
+                        LOG_WARN("Unknown presence.display \"{}\", keeping default \"spacewar\"", *val);
+                }
+                if (auto val = (*presence)["broadcast_app"].value<std::string>())
+                    snapshot.presenceBroadcastApp = *val;
+                else if (auto val = (*presence)["shortcut_name"].value<std::string>()) {
+                    snapshot.presenceBroadcastApp = *val;
+                    LOG_WARN("presence.shortcut_name is deprecated; use presence.broadcast_app");
+                }
+            }
+
             // [inject]
             if (auto inject = tbl["inject"].as_table()) {
                 if (auto val = (*inject)["enabled"].value<bool>())
@@ -168,11 +189,12 @@ namespace {
 
             ApplyManifestProvider(snapshot.manifestProvider);
             LoadResult result = ApplySnapshotLocked(snapshot);
-            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} remote.url_template={}",
+            LOG_INFO("Config loaded: manifest.url={} log.level={} lua.paths={} stats.enable_api={} presence.display={} remote.url_template={}",
                      ManifestClient::ActiveProviderName(),
                      ToString(snapshot.logLevel),
                      (uint32_t)snapshot.luaPaths.size(),
                      snapshot.statsEnableApi,
+                     snapshot.presenceDisplay,
                      snapshot.remoteUrlTemplate.empty() ? "<default>" : snapshot.remoteUrlTemplate);
             return result;
 
@@ -239,6 +261,16 @@ namespace {
     bool GetStatsEnableApi() {
         std::lock_guard lock(g_mutex);
         return statsEnableApi;
+    }
+
+    bool GetPresenceBroadcastEnabled() {
+        std::lock_guard lock(g_mutex);
+        return presenceDisplay != "none";
+    }
+
+    std::string GetPresenceBroadcastApp() {
+        std::lock_guard lock(g_mutex);
+        return presenceBroadcastApp;
     }
 
     CloudSettings GetCloudSettings() {
