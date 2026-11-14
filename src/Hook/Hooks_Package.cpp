@@ -3,9 +3,6 @@
 #include "Hooks_SteamUI.h"
 #include "dllmain.h"
 #include "Utils/HookSupport/VehCommon.h"
-#include <mutex>
-#include <unordered_map>
-#include <limits>
 #include <unordered_set>
 
 namespace
@@ -18,17 +15,6 @@ namespace
 
     void *g_pCUser = nullptr;
     PackageInfo *g_pInjectedPackageInfo = nullptr;
-
-    // Capture the lender before ownership flags are rewritten.
-    std::unordered_map<AppId_t, AccountID_t> g_familySharedOwners;
-    std::mutex g_familySharedOwnersMutex;
-
-    bool HasFamilySharedOwner(AppId_t appId)
-    {
-        std::lock_guard<std::mutex> lock(g_familySharedOwnersMutex);
-        return g_familySharedOwners.find(appId) != g_familySharedOwners.end();
-    }
-
     bool g_licenseInitialized = false;
     bool g_licenseRefreshPending = false;
 
@@ -66,21 +52,8 @@ namespace
         return oCUtlMemoryGrow(pVec, grow_size);
     }
 
-    template <typename T>
-    bool IsWellFormedVector(const CUtlVector<T> &vec)
-    {
-        return vec.m_Size <= vec.m_Memory.m_nAllocationCount &&
-               (vec.m_Memory.m_nAllocationCount == 0 || vec.m_Memory.m_pMemory != nullptr);
-    }
-
     bool InitFakeLicenseOnce(PackageInfo *pPkg)
     {
-        if (!pPkg || !IsWellFormedVector(pPkg->AppIdVec) ||
-            !IsWellFormedVector(pPkg->DepotIdVec))
-        {
-            LOG_PACKAGE_WARN("InitFakeLicenseOnce: package app/depot vectors have invalid layout; skipping injection");
-            return false;
-        }
         // check package status before injecting
         if (pPkg->Status != EPackageStatus::Available)
         {
@@ -93,13 +66,6 @@ namespace
         if (!appIds.empty())
         {
             uint32 oldSize = pPkg->AppIdVec.m_Size;
-            if (appIds.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
-                appIds.size() > static_cast<size_t>(UINT32_MAX - oldSize))
-            {
-                LOG_PACKAGE_WARN("InitFakeLicense(PackageId={}): {} app ids exceed AppIdVec capacity limits",
-                                 kInjectedPackageId, appIds.size());
-                return false;
-            }
             uint32 numToAdd = static_cast<uint32>(appIds.size());
             LOG_PACKAGE_INFO("InitFakeLicense(PackageId={}): adding {} apps, oldSize={}", kInjectedPackageId, numToAdd, oldSize);
             if (!CUtlMemoryGrowWrap(&pPkg->AppIdVec, numToAdd))
@@ -107,20 +73,8 @@ namespace
                 LOG_PACKAGE_WARN("InitFakeLicense(PackageId={}): failed to grow AppId vector", kInjectedPackageId);
                 return false;
             }
-            const uint32 expectedSize = oldSize + numToAdd;
-            if (!IsWellFormedVector(pPkg->AppIdVec) ||
-                pPkg->AppIdVec.m_Memory.m_nAllocationCount < expectedSize)
-            {
-                LOG_PACKAGE_WARN("InitFakeLicense(PackageId={}): AppIdVec growth did not reserve the requested entries",
-                                 kInjectedPackageId);
-                return false;
-            }
             for (uint32 i = 0; i < numToAdd; i++)
                 pPkg->AppIdVec.m_Memory.m_pMemory[oldSize + i] = appIds[i];
-            // CUtlMemoryGrow grows storage but does not increase the vector's
-            // logical length. Without this, Steam's AppIdVec traversal ignores
-            // the injected entries and BuildDepotDependency can see zero depots.
-            pPkg->AppIdVec.m_Size = expectedSize;
         }
 
         g_licenseInitialized = true;
@@ -159,36 +113,21 @@ namespace
         bool result = oCheckAppOwnership(pObj, appId, pOwn);
         TryInitFakeLicenseOnce();
 
-        if (pOwn && (pOwn->bFamilyShared || pOwn->bBorrowed) && pOwn->SteamId32 != 0)
+        if (LuaConfig::HasDepot(appId, false))
         {
-            std::lock_guard<std::mutex> lock(g_familySharedOwnersMutex);
-            g_familySharedOwners[appId] = pOwn->SteamId32;
-        }
-
-        if (pOwn && LuaConfig::HasDepot(appId, true))
-        {
-            const bool borrowed = pOwn->bFamilyShared || pOwn->bBorrowed;
-            const bool knownShared = HasFamilySharedOwner(appId);
-            if (result && pOwn->ExistInPackageNums > 1 && !borrowed && !knownShared)
+            if (result && pOwn->ExistInPackageNums > 1)
             {
-                // Actually owned: mark it so LuaConfig excludes it after this check.
+                // Actually owned — record so HasDepot excludes it going forward
                 LuaConfig::MarkOwned(appId);
                 pOwn->ReleaseState = EAppReleaseState::Released;
-                return result;
             }
             else
             {
                 pOwn->PackageId = kInjectedPackageId;
                 pOwn->ReleaseState = EAppReleaseState::Released;
-                pOwn->bOwnsLicense = true;
+                pOwn->bOwnsLicense = true; // This forces DLCs on steam family shared games that u dont own when adding their appid via .lua
+                // Setting this free flag to false will hide it from the library UI.
                 pOwn->bFreeLicense = false;
-                pOwn->bFamilyShared = false;
-                pOwn->bBorrowed = false;
-                pOwn->bLicenseLocked = false;
-                pOwn->bLicensePending = false;
-                pOwn->bLicenseExpired = false;
-                pOwn->bGuestPass = false;
-                pOwn->bLicensePermanent = true;
                 return true;
             }
         }
@@ -218,13 +157,6 @@ namespace Hooks_Package
         UNHOOK_END();
     }
 
-    AccountID_t GetFamilySharedOwner(AppId_t appId)
-    {
-        std::lock_guard<std::mutex> lock(g_familySharedOwnersMutex);
-        const auto it = g_familySharedOwners.find(appId);
-        return it == g_familySharedOwners.end() ? 0 : it->second;
-    }
-
     void NotifyLicenseChanged()
     {
         PackageInfo *pPkg = g_pInjectedPackageInfo;
@@ -235,13 +167,6 @@ namespace Hooks_Package
         }
 
         // ── Remove depots that were unloaded ──
-        if (!IsWellFormedVector(pPkg->AppIdVec) ||
-            !IsWellFormedVector(pPkg->DepotIdVec))
-        {
-            LOG_PACKAGE_WARN("NotifyLicenseChanged: package app/depot vectors have invalid layout; skipping update");
-            return;
-        }
-
         std::vector<AppId_t> removals = LuaConfig::TakePendingRemovals();
         LOG_PACKAGE_DEBUG("NotifyLicenseChanged: processing {} removals", removals.size());
         uint32_t removedCount = 0;
@@ -265,17 +190,8 @@ namespace Hooks_Package
         if (!additions.empty())
         {
             uint32_t oldSize = pPkg->AppIdVec.m_Size;
-            if (additions.size() <= static_cast<size_t>(std::numeric_limits<int>::max()) &&
-                additions.size() <= static_cast<size_t>(UINT32_MAX - oldSize) &&
-                CUtlMemoryGrowWrap(&pPkg->AppIdVec, static_cast<int>(additions.size())))
+            if (CUtlMemoryGrowWrap(&pPkg->AppIdVec, additions.size()))
             {
-                const uint32_t expectedSize = oldSize + static_cast<uint32_t>(additions.size());
-                if (!IsWellFormedVector(pPkg->AppIdVec) ||
-                    pPkg->AppIdVec.m_Memory.m_nAllocationCount < expectedSize)
-                {
-                    LOG_PACKAGE_WARN("NotifyLicenseChanged: AppIdVec growth did not reserve the requested entries");
-                    return;
-                }
                 // An applied addition invalidates any UI removal that has not
                 // reached the UI thread yet.
                 for (AppId_t id : additions)
@@ -287,9 +203,6 @@ namespace Hooks_Package
                     addedIds.insert(additions[i]);
                     LOG_PACKAGE_DEBUG("NotifyLicenseChanged: inserted AppId {} at [{}]", additions[i], oldSize + i);
                 }
-                // As above, reserve capacity first and publish the enlarged
-                // vector length only after every new entry has been written.
-                pPkg->AppIdVec.m_Size = expectedSize;
             }
             else
             {

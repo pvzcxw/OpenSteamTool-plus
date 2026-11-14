@@ -25,7 +25,7 @@ namespace LuaConfig{
           uint64_t gid;
           uint64_t size;
     };
-    std::unordered_map<uint64_t, ManifestOverride> GetManifestOverrides();
+    const std::unordered_map<uint64_t, ManifestOverride>& GetManifestOverrides();
 
     void ParseFile(const std::string& filePath);
     void UnloadFile(const std::string& filePath);

@@ -15,24 +15,10 @@ namespace ManifestClient {
     // ── parsers ────────────────────────────────────────────────────
     using Parser = bool (*)(std::string_view body, uint64_t* out);
 
-    static std::string_view TrimAsciiWhitespace(std::string_view value) {
-        while (!value.empty() && (value.front() == ' ' || value.front() == '\t' ||
-                                  value.front() == '\r' || value.front() == '\n'))
-            value.remove_prefix(1);
-        while (!value.empty() && (value.back() == ' ' || value.back() == '\t' ||
-                                  value.back() == '\r' || value.back() == '\n'))
-            value.remove_suffix(1);
-        return value;
-    }
-
     static bool ParsePlainUint(std::string_view body, uint64_t* out) {
-        if (!out) return false;
-        body = TrimAsciiWhitespace(body);
-        if (body.empty()) return false;
         uint64_t code = 0;
-        const auto [ptr, ec] = std::from_chars(body.data(), body.data() + body.size(), code);
-        if (ec != std::errc{} || ptr != body.data() + body.size() || code == 0)
-            return false;
+        auto [_, ec] = std::from_chars(body.data(), body.data() + body.size(), code);
+        if (ec != std::errc{}) return false;
         *out = code;
         return true;
     }
@@ -40,27 +26,11 @@ namespace ManifestClient {
     static bool ParseSteamRunJson(std::string_view body, uint64_t* out) {
         size_t key = body.find("\"content\"");
         if (key == std::string_view::npos) return false;
-        size_t pos = key + 9;
-        const auto skipWhitespace = [&]() {
-            while (pos < body.size() &&
-                   (body[pos] == ' ' || body[pos] == '\t' ||
-                    body[pos] == '\r' || body[pos] == '\n')) {
-                ++pos;
-            }
-        };
-        skipWhitespace();
-        if (pos >= body.size() || body[pos++] != ':') return false;
-        skipWhitespace();
-        if (pos >= body.size() || body[pos++] != '"') return false;
-
-        const size_t valueStart = pos;
-        while (pos < body.size() && body[pos] >= '0' && body[pos] <= '9') ++pos;
-        if (pos == valueStart || pos >= body.size() || body[pos] != '"') return false;
-        const size_t valueEnd = pos;
-        ++pos;
-        skipWhitespace();
-        if (pos < body.size() && body[pos] != ',' && body[pos] != '}') return false;
-        return ParsePlainUint(body.substr(valueStart, valueEnd - valueStart), out);
+        size_t q1 = body.find('"', key + 9);
+        if (q1 == std::string_view::npos) return false;
+        size_t q2 = body.find('"', q1 + 1);
+        if (q2 == std::string_view::npos) return false;
+        return ParsePlainUint(body.substr(q1 + 1, q2 - q1 - 1), out);
     }
 
     // ── provider table ────────────────────────────────────────────
@@ -72,21 +42,18 @@ namespace ManifestClient {
     struct Provider {
         std::string_view name;          // matches [manifest] url = "..."
         const char*      urlTemplate;   // one %llu for gid, or two for depotId and gid
-        const char*      urlTemplateAppDepot; // appId, depotId, gid when supported
         Parser           parse;
         bool             needsDepot;
         const wchar_t*   headers;        // optional request headers
     };
 
     consteval Provider Make(std::string_view name, const char* url, Parser parse,
-                            bool needsDepot = false, const wchar_t* headers = nullptr,
-                            const char* urlAppDepot = nullptr) {
-        return {name, url, urlAppDepot, parse, needsDepot, headers};
+                            bool needsDepot = false, const wchar_t* headers = nullptr) {
+        return {name, url, parse, needsDepot, headers};
     }
 
     static constexpr Provider kProviders[] = {
-        Make("opensteamtool", "https://manifest.opensteamtool.com/%llu",       ParsePlainUint,
-             false, nullptr, "https://manifest.opensteamtool.com/%llu/%llu/%llu"),
+        Make("opensteamtool", "https://manifest.opensteamtool.com/%llu",       ParsePlainUint),
         Make("wudrm",         "http://gmrc.wudrm.com/manifest/%llu",           ParsePlainUint),
         Make("steamrun",      "https://manifest.steam.run/api/manifest/%llu",  ParseSteamRunJson),
         Make("20770407",      "https://20770407.xyz/manifest/%llu/%llu",       ParsePlainUint, true),
@@ -121,20 +88,14 @@ namespace ManifestClient {
 
     // ── fetch ─────────────────────────────────────────────────────
 
-    static bool FetchActive(uint64_t gid, uint64_t* outCode, AppId_t appId, AppId_t depotId) {
+    static bool FetchActive(uint64_t gid, uint64_t* outCode, AppId_t depotId) {
         const Provider& p = *g_active;
         const Config::ManifestTimeouts timeouts = Config::GetManifestTimeouts();
 
         if (p.needsDepot && !depotId) return false;
 
         char urlLog[256];
-        const bool appDepotAware = p.urlTemplateAppDepot && depotId;
-        if (appDepotAware) {
-            std::snprintf(urlLog, sizeof(urlLog), p.urlTemplateAppDepot,
-                          static_cast<unsigned long long>(appId),
-                          static_cast<unsigned long long>(depotId),
-                          static_cast<unsigned long long>(gid));
-        } else if (p.needsDepot) {
+        if (p.needsDepot) {
             std::snprintf(urlLog, sizeof(urlLog), p.urlTemplate,
                           static_cast<unsigned long long>(depotId),
                           static_cast<unsigned long long>(gid));
@@ -165,9 +126,6 @@ namespace ManifestClient {
     bool FetchManifestRequestCode(uint64_t manifestGid, uint64_t* outRequestCode,
                                   AppId_t appId, AppId_t depotId)
     {
-        if (!outRequestCode) return false;
-        *outRequestCode = 0;
-        if (manifestGid == 0) return false;
         std::lock_guard<std::mutex> lock(g_mutex);
 
         if (appId && depotId && LuaConfig::HasManifestCodeFuncEx()) {
@@ -186,6 +144,6 @@ namespace ManifestClient {
             LOG_MANIFEST_WARN("Manifest gid={} lua returned nil, falling back to config", manifestGid);
         }
 
-        return FetchActive(manifestGid, outRequestCode, appId, depotId);
+        return FetchActive(manifestGid, outRequestCode, depotId);
     }
 }

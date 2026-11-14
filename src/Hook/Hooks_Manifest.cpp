@@ -10,13 +10,6 @@
 // ═══════════════════════════════════════════════════════════════════
 namespace {
 
-    template <typename T>
-    bool IsWellFormedVector(const CUtlVector<T>* vec) {
-        return !vec || (vec->m_Size <= vec->m_Memory.m_nAllocationCount &&
-                        (vec->m_Memory.m_nAllocationCount == 0 ||
-                         vec->m_Memory.m_pMemory != nullptr));
-    }
-
     std::string DepotEntryDebug(const DepotEntry& e) {
         return std::format("DepotId={} AppId={} Gid={} Size={} Dlc={} Lcs={} Carry={} Shared={}",
             e.DepotId, e.AppId, e.ManifestGid, e.ManifestSize, e.DlcAppId,
@@ -30,16 +23,6 @@ namespace {
     {
         bool result = oBuildDepotDependency(pUserAppMgr, AppId, pUserConfig,
             pDepotInfo, pSharedDepotInfo, pSteamApp, pBuildId, pbBetaFallback);
-
-        // Do not walk Steam-owned vector memory unless its pointer/count/capacity
-        // agree. A transient appinfo refresh can leave the output vectors empty;
-        // malformed metadata must take the original failure path rather than
-        // crash while logging or patching it.
-        if (!IsWellFormedVector(pDepotInfo) || !IsWellFormedVector(pSharedDepotInfo)) {
-            LOG_MANIFEST_WARN("BuildDepotDependency: app {} returned an invalid depot vector; preserving previous config",
-                              AppId);
-            return false;
-        }
 
         LOG_MANIFEST_TRACE("BuildDepotDependency: AppId={} pUserConfig=0x{:X} result={} pSteamApp=0x{:X} pBuildId={} pbBetaFallback={}",
             AppId, (uintptr_t)pUserConfig, result, (uintptr_t)pSteamApp,
@@ -58,18 +41,6 @@ namespace {
         }
 
         if (!result) return result;
-
-        // During a PICS refresh Steam can briefly drop the app's own depot list
-        // before publishing the replacement appinfo. Letting an empty result
-        // through makes Steam persist a zero-depot install as fully installed.
-        // The shared list is intentionally excluded: it contains depots owned
-        // by other apps and cannot establish that this app's own list is valid.
-        if (AppId != 0 && (!pDepotInfo || pDepotInfo->m_Size == 0) &&
-            LuaConfig::HasDepot(AppId, false)) {
-            LOG_MANIFEST_WARN("BuildDepotDependency: app {} returned 0 own depots during appinfo refresh; preserving previous config",
-                              AppId);
-            return false;
-        }
 
         const auto& overrides = LuaConfig::GetManifestOverrides();
         if (overrides.empty()) return result;
