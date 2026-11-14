@@ -143,6 +143,13 @@ message CMsgClientSharedLibraryStopPlaying_StopApp {
 	optional uint32 owner_id = 2;
 }
 
+// CMsgClientPlayingSessionState (eMsg 9600); recovered from the installed
+// client's protobuf descriptor for app-specific stop correlation.
+message CMsgClientPlayingSessionState {
+	optional bool playing_blocked = 2;
+	optional fixed32 playing_app = 3;
+}
+
 // ============================================================
 // CPlayer_GetUserStats  
 // ============================================================

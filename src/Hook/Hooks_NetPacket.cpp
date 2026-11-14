@@ -650,6 +650,280 @@ namespace Hooks_NetPacket_FamilySharing
 } // namespace Hooks_NetPacket_FamilySharing
 
 // ════════════════════════════════════════════════════════════════
+//  Hooks_NetPacket_PlayingPresence
+//
+//  Correlates a server SharedLibraryStopPlaying notification with the
+//  subsequent PlayingSessionState event.  It only hides a game when the
+//  app is present in the client's last GamesPlayed list and its non-local
+//  owner matches the stop notification and 9600 reports that same app as
+//  blocked.  9600's fields were checked against the installed Steam client.
+// ════════════════════════════════════════════════════════════════
+namespace Hooks_NetPacket_PlayingPresence
+{
+    using Clock = std::chrono::steady_clock;
+    constexpr auto kCorrelationWindow = std::chrono::minutes(10);
+    constexpr auto kConfirmedWindow = std::chrono::minutes(10);
+
+    struct RunningGame
+    {
+        uint32 ownerId = 0;
+        bool hasOwner = false;
+    };
+
+    struct PendingStop
+    {
+        uint32 ownerId = 0;
+        Clock::time_point receivedAt{};
+    };
+
+    struct HiddenGame
+    {
+        uint32 ownerId = 0;
+        Clock::time_point confirmedAt{};
+    };
+
+    std::mutex g_mutex;
+    uint32 g_localAccountId = 0;
+    std::unordered_map<AppId_t, RunningGame> g_runningGames;
+    std::unordered_map<AppId_t, PendingStop> g_pendingStops;
+    std::unordered_map<AppId_t, HiddenGame> g_hiddenOwners;
+    bool g_emptyGamesPlayedReported = false;
+
+    static void ResetAccountState()
+    {
+        g_runningGames.clear();
+        g_pendingStops.clear();
+        g_hiddenOwners.clear();
+        g_emptyGamesPlayedReported = false;
+    }
+
+    void Reset()
+    {
+        std::lock_guard lock(g_mutex);
+        g_localAccountId = 0;
+        ResetAccountState();
+    }
+
+    static void ExpirePendingStops(Clock::time_point now)
+    {
+        for (auto it = g_pendingStops.begin(); it != g_pendingStops.end();)
+        {
+            if (now < it->second.receivedAt || now - it->second.receivedAt > kCorrelationWindow)
+                it = g_pendingStops.erase(it);
+            else
+                ++it;
+        }
+    }
+
+    static uint32 ReadAccountId(const uint8 *pHdr, uint32 cbHdr)
+    {
+        CMsgProtoBufHeader hdr;
+        if (!pHdr || cbHdr > static_cast<uint32>(std::numeric_limits<int>::max()) ||
+            !hdr.ParseFromArray(pHdr, static_cast<int>(cbHdr)) || !hdr.has_steamid() || !hdr.steamid())
+            return 0;
+        return static_cast<uint32>(hdr.steamid() & 0xFFFFFFFFull);
+    }
+
+    // Called for the actual local GamesPlayed report, before any filtering.
+    // Returns whether the body changed and sets suppressSend only after an
+    // empty list has already been sent once to clear the server-side game state.
+    bool FilterGamesPlayed(CMsgClientGamesPlayed &msg,
+                           const uint8 *pHdr, uint32 cbHdr,
+                           bool &suppressSend)
+    {
+        suppressSend = false;
+        const uint32 accountId = ReadAccountId(pHdr, cbHdr);
+
+        std::lock_guard lock(g_mutex);
+        if (accountId)
+        {
+            if (g_localAccountId && accountId != g_localAccountId)
+                ResetAccountState();
+            g_localAccountId = accountId;
+        }
+        if (!g_localAccountId)
+            return false;
+
+        const auto now = Clock::now();
+        ExpirePendingStops(now);
+
+        if (msg.games_played_size() == 0)
+        {
+            ResetAccountState();
+            return false;
+        }
+
+        std::unordered_map<AppId_t, RunningGame> current;
+        for (const auto &game : msg.games_played())
+        {
+            const AppId_t appId = static_cast<AppId_t>(game.game_id() & UINT32_MAX);
+            if (!appId)
+                continue;
+            current[appId] = {game.has_owner_id() ? game.owner_id() : 0, game.has_owner_id()};
+        }
+        g_runningGames = std::move(current);
+
+        for (auto it = g_pendingStops.begin(); it != g_pendingStops.end();)
+        {
+            const auto game = g_runningGames.find(it->first);
+            if (game == g_runningGames.end() || !game->second.hasOwner ||
+                game->second.ownerId != it->second.ownerId)
+                it = g_pendingStops.erase(it);
+            else
+                ++it;
+        }
+        for (auto it = g_hiddenOwners.begin(); it != g_hiddenOwners.end();)
+        {
+            if (now < it->second.confirmedAt || now - it->second.confirmedAt > kConfirmedWindow)
+            {
+                it = g_hiddenOwners.erase(it);
+                g_emptyGamesPlayedReported = false;
+            }
+            else
+                ++it;
+        }
+        for (auto it = g_hiddenOwners.begin(); it != g_hiddenOwners.end();)
+        {
+            const auto game = g_runningGames.find(it->first);
+            if (game == g_runningGames.end() || !game->second.hasOwner ||
+                game->second.ownerId != it->second.ownerId || game->second.ownerId == g_localAccountId)
+                it = g_hiddenOwners.erase(it);
+            else
+                ++it;
+        }
+
+        int removed = 0;
+        for (int i = msg.games_played_size() - 1; i >= 0; --i)
+        {
+            const auto &game = msg.games_played(i);
+            const AppId_t appId = static_cast<AppId_t>(game.game_id() & UINT32_MAX);
+            const auto hidden = g_hiddenOwners.find(appId);
+            if (hidden != g_hiddenOwners.end() && game.has_owner_id() &&
+                game.owner_id() == hidden->second.ownerId && game.owner_id() != g_localAccountId)
+            {
+                msg.mutable_games_played()->DeleteSubrange(i, 1);
+                ++removed;
+            }
+        }
+
+        if (!removed)
+        {
+            if (msg.games_played_size() > 0)
+                g_emptyGamesPlayedReported = false;
+            return false;
+        }
+
+        if (msg.games_played_size() > 0)
+        {
+            // Other games remain visible; a later all-hidden update must send
+            // a fresh empty list before redundant reports are suppressed.
+            g_emptyGamesPlayedReported = false;
+        }
+        else if (g_emptyGamesPlayedReported)
+        {
+            suppressSend = true;
+        }
+        else
+        {
+            // The first empty list clears stale game presence at the server.
+            g_emptyGamesPlayedReported = true;
+        }
+
+        return true;
+    }
+
+    void ObserveStopPlaying(const uint8 *pBody, uint32 cbBody)
+    {
+        CMsgClientSharedLibraryStopPlaying msg;
+        if (!pBody || cbBody > static_cast<uint32>(std::numeric_limits<int>::max()) ||
+            !msg.ParseFromArray(pBody, static_cast<int>(cbBody)))
+        {
+            LOG_NETPACKET_WARN("FamilySharing: StopPlaying body unparsable ({} bytes)", cbBody);
+            return;
+        }
+
+        std::lock_guard lock(g_mutex);
+        const auto now = Clock::now();
+        ExpirePendingStops(now);
+        if (!g_localAccountId || (msg.has_seconds_left() && msg.seconds_left() < 0))
+        {
+            LOG_NETPACKET_DEBUG("FamilySharing: StopPlaying ignored (account unknown or no time remaining)");
+            return;
+        }
+
+        for (const auto &stop : msg.stop_apps())
+        {
+            if (!stop.has_app_id() || !stop.has_owner_id() || !stop.app_id() || !stop.owner_id() ||
+                stop.owner_id() == g_localAccountId)
+                continue;
+
+            const AppId_t appId = stop.app_id();
+            const auto game = g_runningGames.find(appId);
+            // Require both protocol messages to agree with the last local
+            // GamesPlayed owner; AppId-only correlation is too ambiguous.
+            if (game == g_runningGames.end() || !game->second.hasOwner ||
+                game->second.ownerId != stop.owner_id())
+                continue;
+
+            g_pendingStops[appId] = {stop.owner_id(), now};
+            LOG_NETPACKET_INFO("FamilySharing: pending stop app={} owner={} seconds_left={}",
+                               appId, stop.owner_id(), msg.has_seconds_left() ? msg.seconds_left() : -1);
+        }
+    }
+
+    void ObservePlayingSessionState(const uint8 *pBody, uint32 cbBody)
+    {
+        if (!pBody || cbBody == 0 || cbBody > static_cast<uint32>(std::numeric_limits<int>::max()))
+        {
+            LOG_NETPACKET_DEBUG("PlayingSessionState ignored (bodyBytes={})", cbBody);
+            return;
+        }
+
+        CMsgClientPlayingSessionState msg;
+        if (!msg.ParseFromArray(pBody, static_cast<int>(cbBody)) ||
+            !msg.has_playing_app() || !msg.has_playing_blocked())
+        {
+            LOG_NETPACKET_DEBUG("PlayingSessionState missing app/block state (bodyBytes={})", cbBody);
+            return;
+        }
+
+        std::lock_guard lock(g_mutex);
+        const auto now = Clock::now();
+        ExpirePendingStops(now);
+        const AppId_t appId = msg.playing_app();
+        const auto pending = g_pendingStops.find(appId);
+        if (!msg.playing_blocked())
+        {
+            g_pendingStops.erase(appId);
+            LOG_NETPACKET_INFO("PlayingSessionState app={} blocked=false; stop candidate cleared", appId);
+            return;
+        }
+
+        if (pending == g_pendingStops.end())
+        {
+            LOG_NETPACKET_DEBUG("PlayingSessionState app={} blocked=true without matching stop notice", appId);
+            return;
+        }
+
+        const auto game = g_runningGames.find(appId);
+        if (game == g_runningGames.end() || !game->second.hasOwner ||
+            game->second.ownerId != pending->second.ownerId)
+        {
+            g_pendingStops.erase(pending);
+            LOG_NETPACKET_DEBUG("PlayingSessionState app={} blocked=true but running owner changed", appId);
+            return;
+        }
+
+        g_hiddenOwners[appId] = {pending->second.ownerId, now};
+        g_pendingStops.erase(pending);
+        g_emptyGamesPlayedReported = false;
+        LOG_NETPACKET_INFO("PlayingSessionState app={} blocked=true owner={} confirmed; next GamesPlayed update will clear it",
+                           appId, game->second.ownerId);
+    }
+
+} // namespace Hooks_NetPacket_PlayingPresence
+
+// ════════════════════════════════════════════════════════════════
 //  Hooks_NetPacket_Manifest
 //
 //  Outgoing: ContentServerDirectory.GetManifestRequestCode#1  (eMsg 151)
@@ -1265,7 +1539,7 @@ namespace Hooks_NetPacket_OnlineFix
 {
 
     bool HandleSend(const uint8 *pBody, uint32 cbBody,
-                    const uint8 *pHdr, uint32 cbHdr)
+                    const uint8 *pHdr, uint32 cbHdr, EMsg eMsg)
     {
         CMsgClientGamesPlayed msg;
         if (!msg.ParseFromArray(pBody, cbBody))
@@ -1275,9 +1549,20 @@ namespace Hooks_NetPacket_OnlineFix
         }
         LOG_ONLINEFIX_DEBUG("OnlineFix: original body:\n{}", msg.DebugString());
 
+        bool suppressRepeatedClear = false;
+        const bool presenceChanged = Hooks_NetPacket_PlayingPresence::FilterGamesPlayed(
+            msg, pHdr, cbHdr, suppressRepeatedClear);
         Hooks_NetPacket_RichPresence::TrackSend(msg, pHdr, cbHdr);
 
-        bool patched = false;
+        if (suppressRepeatedClear)
+        {
+            g_SuppressSend = true;
+            LOG_NETPACKET_INFO("GamesPlayed({}) suppressed after empty presence was reported",
+                               static_cast<uint32>(eMsg));
+            return false;
+        }
+
+        bool patched = presenceChanged;
         for (int i = 0; i < msg.games_played_size(); ++i)
         {
             auto *game = msg.mutable_games_played(i);
@@ -1593,7 +1878,7 @@ namespace
 
         case k_EMsgClientGamesPlayed:             // 742
         case k_EMsgClientGamesPlayedWithDataBlob: // 5410
-            g_NeedReplaceSend = Hooks_NetPacket_OnlineFix::HandleSend(pBody, cbBody, pHdr, cbHdr);
+            g_NeedReplaceSend = Hooks_NetPacket_OnlineFix::HandleSend(pBody, cbBody, pHdr, cbHdr, eMsg);
             return;
 
         case k_EMsgClientRichPresenceUpload: // 7501
@@ -1680,7 +1965,12 @@ namespace
             return;
 
         case k_EMsgClientSharedLibraryStopPlaying: // 9406
-            Hooks_NetPacket_FamilySharing::ClearBody(pBody, cbBody);
+            // Observe the native stop request, but let Steam process it unchanged.
+            Hooks_NetPacket_PlayingPresence::ObserveStopPlaying(pBody, cbBody);
+            return;
+
+        case k_EMsgClientPlayingSessionState: // 9600
+            Hooks_NetPacket_PlayingPresence::ObservePlayingSessionState(pBody, cbBody);
             return;
 
         case k_EMsgClientPersonaState: // 766
@@ -1846,6 +2136,7 @@ namespace Hooks_NetPacket
 
     void Install()
     {
+        Hooks_NetPacket_PlayingPresence::Reset();
         RESOLVE_C(PchMsgNameFromEMsg);
         HOOK_BEGIN();
         INSTALL_HOOK_C(BBuildAndAsyncSendFrame);
@@ -1859,6 +2150,7 @@ namespace Hooks_NetPacket
         UNINSTALL_HOOK(BBuildAndAsyncSendFrame);
         UNINSTALL_HOOK(RecvPkt);
         UNHOOK_END();
+        Hooks_NetPacket_PlayingPresence::Reset();
         NetPacketLayout::Reset();
     }
 }
