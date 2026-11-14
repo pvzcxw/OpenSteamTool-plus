@@ -13,8 +13,11 @@
 #include <atomic>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <format>
 #include <future>
+#include <iterator>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -975,6 +978,13 @@ namespace Hooks_NetPacket_RichPresence
     // CMsgClientRichPresenceUpload.  Per-AppId so a multi-game stack
     // does not conflate KV state.
     std::unordered_map<AppId_t, std::vector<std::pair<std::string, std::string>>> g_RPKvsByAppId;
+    bool g_LastBroadcastEnabled = true;
+    bool g_BroadcastStateInitialized = false;
+
+    static bool BroadcastEnabled()
+    {
+        return Config::GetPresenceBroadcastEnabled();
+    }
 
     // Walk Steam's binary KV1 stream (a top-level "RP" struct around
     // string KVs) and collect every string KV at any depth.  Type 0x00
@@ -1144,7 +1154,7 @@ namespace Hooks_NetPacket_RichPresence
         LOG_RICHPRESENCE_DEBUG("RP upload appid={}: kv_bytes={} extracted={} pairs",
                                g_PlayingAppId, kv.size(), kvs.size());
 
-        if (BuildInject(g_PlayingAppId))
+        if (BroadcastEnabled() && BuildInject(g_PlayingAppId))
             g_InjectPending = true;
     }
 
@@ -1179,15 +1189,37 @@ namespace Hooks_NetPacket_RichPresence
         if (topmost != 0 && topmost != kOnlineFixAppId && LuaConfig::HasDepot(topmost))
             newTracked = topmost;
 
-        if (g_PlayingAppId == newTracked)
+        const bool broadcastEnabled = BroadcastEnabled();
+        const bool broadcastChanged = g_BroadcastStateInitialized &&
+                                      g_LastBroadcastEnabled != broadcastEnabled;
+        g_LastBroadcastEnabled = broadcastEnabled;
+        g_BroadcastStateInitialized = true;
+        const bool trackedChanged = g_PlayingAppId != newTracked;
+        if (!trackedChanged && !broadcastChanged)
             return;
-        AppId_t oldTracked = g_PlayingAppId;
-        g_PlayingAppId = newTracked;
 
-        if (oldTracked != 0)
+        AppId_t oldTracked = g_PlayingAppId;
+        if (trackedChanged)
+            g_PlayingAppId = newTracked;
+
+        if (trackedChanged && oldTracked != 0)
             CloudRedirectHost::NotifyAppRunning(oldTracked, false);
-        if (newTracked != 0)
+        if (trackedChanged && newTracked != 0)
             CloudRedirectHost::NotifyAppRunning(newTracked, true);
+
+        if (!broadcastEnabled)
+        {
+            if (broadcastChanged)
+            {
+                g_InjectPending = false;
+                if (BuildInject(0))
+                {
+                    g_InjectPending = true;
+                    LOG_RICHPRESENCE_INFO("Friend broadcast disabled; scheduling status clear");
+                }
+            }
+            return;
+        }
 
         if (newTracked != 0)
         {
@@ -1246,7 +1278,7 @@ namespace Hooks_NetPacket_RichPresence
             g_HaveSelfCached = true;
         }
 
-        if (g_PlayingAppId == 0)
+        if (!BroadcastEnabled() || g_PlayingAppId == 0)
             return false;
 
         ApplyGameFields(msg, selfEntry, g_PlayingAppId);
@@ -1293,6 +1325,50 @@ namespace Hooks_NetPacket_RichPresence
 namespace Hooks_NetPacket_OnlineFix
 {
 
+    // Return a non-Steam shortcut CGameID for friend broadcasts, if one is
+    // available in any Steam userdata shortcuts.vdf file.
+    static uint64 FindShortcutGameId()
+    {
+        static uint64 cached = 0;
+        static bool tried = false;
+        if (tried || SteamInstallPath[0] == '\0')
+            return cached;
+        tried = true;
+
+        std::error_code ec;
+        const auto userdataPath = std::filesystem::path(SteamInstallPath) / "userdata";
+        for (const auto& entry : std::filesystem::directory_iterator(userdataPath, ec))
+        {
+            if (ec) break;
+            if (!entry.is_directory(ec) || ec)
+            {
+                ec.clear();
+                continue;
+            }
+
+            std::ifstream file(entry.path() / "config" / "shortcuts.vdf", std::ios::binary);
+            if (!file) continue;
+
+            std::vector<uint8> data((std::istreambuf_iterator<char>(file)),
+                                    std::istreambuf_iterator<char>());
+            constexpr uint8 marker[] = {0x02, 'a', 'p', 'p', 'i', 'd', 0x00};
+            for (size_t i = 0; i + sizeof(marker) + sizeof(uint32) <= data.size(); ++i)
+            {
+                if (std::memcmp(data.data() + i, marker, sizeof(marker)) != 0)
+                    continue;
+
+                uint32 appId = 0;
+                std::memcpy(&appId, data.data() + i + sizeof(marker), sizeof(appId));
+                cached = (static_cast<uint64>(appId) << 32) | (2ULL << 24);
+                LOG_ONLINEFIX_INFO("Using shortcut game_id=0x{:016X} for friend broadcast", cached);
+                return cached;
+            }
+        }
+
+        LOG_ONLINEFIX_DEBUG("No Steam shortcut found for friend broadcast");
+        return 0;
+    }
+
     bool HandleSend(const uint8 *pBody, uint32 cbBody,
                     const uint8 *pHdr, uint32 cbHdr)
     {
@@ -1306,7 +1382,9 @@ namespace Hooks_NetPacket_OnlineFix
 
         Hooks_NetPacket_RichPresence::TrackSend(msg, pHdr, cbHdr);
 
+        const bool broadcast = Config::GetPresenceBroadcastEnabled();
         bool patched = false;
+        bool didBroadcastRewrite = false;
         for (int i = 0; i < msg.games_played_size(); ++i)
         {
             auto *game = msg.mutable_games_played(i);
@@ -1314,19 +1392,44 @@ namespace Hooks_NetPacket_OnlineFix
 
             // SpawnProcess rewrites pGameID to 480, so game_id is already 480.
             // Fill game_extra_info with the real game name.
-            if (appid == kOnlineFixAppId)
+            if (broadcast && appid == kOnlineFixAppId)
             {
                 AppId_t realAppId = Hooks_Misc::ResolveAppId();
-                if (realAppId && LuaConfig::HasDepot(realAppId))
+                if (realAppId && realAppId != kOnlineFixAppId)
                 {
                     std::string name = Hooks_Misc::GetGameNameByAppID(realAppId);
                     if (!name.empty())
                     {
                         game->set_game_extra_info(name);
                         patched = true;
+                        didBroadcastRewrite = true;
                         LOG_ONLINEFIX_INFO("OnlineFix: 480 -> name '{}' (real appid {})",
                                            name, realAppId);
                     }
+                }
+            }
+        }
+
+        // When enabled, report an unlocked game as a configured Steam
+        // shortcut (or Spacewar when there is no shortcut), carrying its
+        // display name separately so the real AppId remains hidden.
+        if (broadcast && !didBroadcastRewrite)
+        {
+            const AppId_t trackedId = Hooks_NetPacket_RichPresence::g_PlayingAppId;
+            if (trackedId != 0 && trackedId != kOnlineFixAppId && msg.games_played_size() > 0)
+            {
+                std::string name = Hooks_Misc::GetGameNameByAppID(trackedId);
+                if (!name.empty())
+                {
+                    auto* topGame = msg.mutable_games_played(msg.games_played_size() - 1);
+                    const uint64 shortcutId = FindShortcutGameId();
+                    topGame->set_game_id(shortcutId ? shortcutId : kOnlineFixAppId);
+                    topGame->set_game_extra_info(name);
+                    topGame->clear_owner_id();
+                    patched = true;
+                    didBroadcastRewrite = true;
+                    LOG_ONLINEFIX_INFO("RichPresence: appid {} -> broadcast id {} ({})",
+                                       trackedId, shortcutId ? shortcutId : kOnlineFixAppId, name);
                 }
             }
         }

@@ -55,6 +55,7 @@
 - 写入 Lua 的共享游戏按假入库路径处理；网络钩子会在清除借用标记前记录出借方，并在处理游玩状态数据包时使用该记录。
 - 当前账号已经拥有的游戏即使同时写入 Lua，仍保留正常许可路径。
 - 未写入 Lua 的共享游戏继续遵循 Steam 原生行为。只有在没有出借方记录时，库界面才会为 Lua 游戏补齐空所有者。
+- `[presence] display = "spacewar"`（默认）会优先使用 Steam 快捷方式身份向好友播报 Lua 游戏；未找到快捷方式时使用 Spacewar（AppId 480）。设置为 `"none"` 可关闭 OpenSteamTool 的好友状态改写，不影响家庭共享处理。
 
 ### 兼容 Denuvo 和 SteamStub 保护的游戏
 - 仅 SteamStub 保护的游戏不需要配置 `AppTicket`。OpenSteamTool 可以重用 Steam 本地 ConfigStore 令牌，通过 SteamDRMP 令牌解析漏洞伪造请求的 AppId，无需注入游戏进程
@@ -204,6 +205,10 @@ timeout_recv_ms    = 10000
 # 当未设置 Lua 函数 setStat(appid, "steamid") 时，自动查询 https://stats.luastools.xyz/{appid} 获取推荐的 SteamID。
 # 优先级：启用且有效时，setStat > stats API > 固定预设 SteamID。
 enable_api = true
+
+[presence]
+# Lua 游戏的好友播报模式："spacewar"（默认）或 "none"。
+display = "spacewar"
 
 # 额外的 Lua 配置目录（可选）。
 # 文件将在默认的 <Steam>/config/lua 文件夹之后加载。

@@ -55,6 +55,7 @@
 - Lua-listed shared games are handled by the fake-license path; the network hook tracks the lender before clearing the borrowed flags and uses that record when processing play-state packets.
 - Games already owned by the current account retain the normal license path, even when they are also listed in Lua.
 - Shared games not listed in Lua continue to follow Steam's native sharing behavior. The library UI only fills an empty owner for Lua-listed apps when no lender was recorded.
+- `[presence] display = "spacewar"` (default) lets friends see Lua-listed games by reporting a Steam shortcut identity when available, or Spacewar (AppId 480) otherwise. Set it to `"none"` to disable OpenSteamTool's friend-presence patches without changing the family-sharing handling.
 
 ### Compatible with games protected by Denuvo and SteamStub
 - SteamStub-only games do not require configuring `AppTicket`. OpenSteamTool can reuse Steam's local ConfigStore ticket and forge the requested AppId through a SteamDRMP off-by-four ticket parsing vulnerability, without injecting into the game process.
@@ -206,6 +207,10 @@ timeout_recv_ms    = 10000
 # SteamID when no Lua setStat(appid, "steamid") override exists.
 # Priority: setStat > stats API when enabled and valid > hardcoded preset SteamID.
 enable_api = true
+
+[presence]
+# Friend broadcast mode for Lua-listed games: "spacewar" (default) or "none".
+display = "spacewar"
 
 # Additional Lua config directories (optional).
 # Files are loaded after the default <Steam>/config/lua folder.
