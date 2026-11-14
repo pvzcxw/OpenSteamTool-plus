@@ -10,7 +10,11 @@
 #include <cctype>
 #include <cstdint>
 #include <fstream>
+#include <limits>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -22,6 +26,8 @@ namespace LuaConfig{
     static lua_State* g_lua_state = nullptr;
     static bool g_hasManifestCodeFunc = false;
     static bool g_hasManifestCodeFuncEx = false;
+    static std::recursive_mutex g_luaMutex;
+    static std::shared_mutex g_depotDataMutex;
     std::unordered_map<AppId_t, std::string>DepotKeySet{};
     std::unordered_map<AppId_t, uint64_t>AccessTokenSet{};
     std::unordered_set<AppId_t> PinnedApps{};
@@ -34,6 +40,11 @@ namespace LuaConfig{
     // Per-file tracking: which depots each .lua file contributed.
     static std::string g_currentFile;
     static std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileDepots;
+    // Keys are tracked per source file so removing/reloading one script cannot
+    // leave its key active merely because another script still lists the depot.
+    static std::unordered_map<std::string, std::unordered_map<AppId_t, std::string>> g_fileDepotKeys;
+    static std::unordered_set<AppId_t> g_untrackedDepotIds;
+    static std::unordered_map<AppId_t, std::string> g_untrackedDepotKeys;
     static std::unordered_map<std::string, std::unordered_map<uint64_t, ManifestOverride>> g_fileManifestOverrides;
     static std::unordered_map<std::string, uint64_t> g_fileParseSequence;
     static uint64_t g_nextFileParseSequence = 0;
@@ -49,15 +60,66 @@ namespace LuaConfig{
     static std::vector<AppId_t> g_pendingAdditions;
     constexpr uint64_t kDefaultStatSteamId = 76561198028121353ULL;
 
+    // Caller holds g_depotDataMutex exclusively.
+    static void RebuildDepotKeyLocked(AppId_t depotId) {
+        const std::string* bestKey = nullptr;
+        uint64_t bestSequence = 0;
+
+        if (const auto it = g_untrackedDepotKeys.find(depotId);
+            it != g_untrackedDepotKeys.end()) {
+            bestKey = &it->second;
+        }
+
+        for (const auto& [file, keys] : g_fileDepotKeys) {
+            const auto keyIt = keys.find(depotId);
+            const auto sequenceIt = g_fileParseSequence.find(file);
+            if (keyIt == keys.end() || sequenceIt == g_fileParseSequence.end()) continue;
+            if (!bestKey || sequenceIt->second > bestSequence) {
+                bestKey = &keyIt->second;
+                bestSequence = sequenceIt->second;
+            }
+        }
+
+        const bool depotStillListed = g_untrackedDepotIds.contains(depotId) ||
+                                      g_depotRefCount.contains(depotId);
+        if (bestKey) {
+            DepotKeySet[depotId] = *bestKey;
+        } else if (depotStillListed) {
+            DepotKeySet[depotId].clear();
+        } else {
+            DepotKeySet.erase(depotId);
+        }
+    }
+
+    static bool IsValidDepotKey(std::string_view key) {
+        if (key.size() != 64) return false;
+        for (const unsigned char ch : key) {
+            const bool hex = (ch >= '0' && ch <= '9') ||
+                             (ch >= 'a' && ch <= 'f') ||
+                             (ch >= 'A' && ch <= 'F');
+            if (!hex) return false;
+        }
+        return true;
+    }
+
     // Case-insensitive function registry: lowercase name → C function
     static std::unordered_map<std::string, lua_CFunction> g_func_registry;
 
-    static bool ParseUInt64Decimal(const char* text, uint64_t* out) {
-        if (!text || !out) return false;
+    static bool ParseUInt64Decimal(std::string_view text, uint64_t* out) {
+        if (!out) return false;
         const auto parsed = OSTPlatform::Numbers::ParseUInt64(text);
         if (!parsed) return false;
         *out = *parsed;
         return true;
+    }
+
+    static void PushUInt64(lua_State* L, uint64_t value) {
+        if (value <= static_cast<uint64_t>(std::numeric_limits<lua_Integer>::max())) {
+            lua_pushinteger(L, static_cast<lua_Integer>(value));
+            return;
+        }
+        const std::string decimal = std::to_string(value);
+        lua_pushlstring(L, decimal.data(), decimal.size());
     }
 
     static uint8 ParseHexByte(std::string_view text) {
@@ -65,14 +127,17 @@ namespace LuaConfig{
     }
 
     static void SetActiveManifestOverride(uint64_t depotId, const ManifestOverride& override) {
+        std::lock_guard lock(g_luaMutex);
         ManifestOverrides[depotId] = override;
     }
 
     static void ClearActiveManifestOverride(uint64_t depotId) {
+        std::lock_guard lock(g_luaMutex);
         ManifestOverrides.erase(depotId);
     }
 
     static void RebuildManifestOverride(uint64_t depotId) {
+        std::lock_guard lock(g_luaMutex);
         const ManifestOverride* best = nullptr;
         uint64_t bestSeq = 0;
 
@@ -204,19 +269,20 @@ namespace LuaConfig{
         // Read the optional third argument as a key.
         std::string Key = "";
         if (argc > 2) {
-            if (!lua_isstring(L, 3))
-                return luaL_error(L, "");
-            const char* key = lua_tostring(L, 3);
-            // Keep only keys with exactly 64 characters.
-            if (strlen(key) == 64) {
-                Key = std::string(key);
+            if (lua_type(L, 3) != LUA_TSTRING)
+                return luaL_error(L, "addappid: key must be a string");
+            size_t keyLength = 0;
+            const char* key = lua_tolstring(L, 3, &keyLength);
+            if (keyLength != 0) {
+                const std::string_view keyView(key, keyLength);
+                if (!IsValidDepotKey(keyView))
+                    return luaL_error(L, "addappid: key must be exactly 64 hexadecimal characters");
+                Key.assign(keyView);
             }
         }
-        // Non-empty keys have priority over existing empty keys.
-        if (!Key.empty() || !DepotKeySet.count(DepotId)) {
-            DepotKeySet[DepotId] = Key;
-        }
 
+        std::unique_lock lock(g_depotDataMutex);
+        bool keyChanged = false;
         if (!g_currentFile.empty()) {
             if (g_fileDepots[g_currentFile].insert(DepotId).second) {
                 if (++g_depotRefCount[DepotId] == 1)
@@ -231,7 +297,23 @@ namespace LuaConfig{
                     if (mt > slot) slot = mt;
                 }
             }
+
+            if (!Key.empty()) {
+                g_fileDepotKeys[g_currentFile][DepotId] = Key;
+                keyChanged = true;
+            }
+        } else {
+            g_untrackedDepotIds.insert(DepotId);
+            if (!Key.empty()) {
+                g_untrackedDepotKeys[DepotId] = Key;
+                keyChanged = true;
+            }
         }
+
+        // A missing key remains a valid depot declaration, but it must not
+        // shadow a non-empty key contributed by another Lua file.
+        if (keyChanged || !DepotKeySet.contains(DepotId))
+            RebuildDepotKeyLocked(DepotId);
 
         return 0;
     }
@@ -257,9 +339,10 @@ namespace LuaConfig{
         if (argc > 1) {
             if (!lua_isstring(L, 2))
                 return luaL_error(L, "");
-            const char* token = lua_tostring(L, 2);
+            size_t tokenLength = 0;
+            const char* token = lua_tolstring(L, 2, &tokenLength);
             uint64_t parsedToken = 0;
-            if (!ParseUInt64Decimal(token, &parsedToken)) {
+            if (!ParseUInt64Decimal(std::string_view(token, tokenLength), &parsedToken)) {
                 return luaL_error(L, "");
             }
             AccessTokenSet[AppId] = parsedToken;
@@ -309,10 +392,11 @@ namespace LuaConfig{
             return luaL_error(L, "setManifestid: depotId out of range");
 
         uint64_t depotId = (uint64_t)(uint32_t)val;
-        const char* gidStr = lua_tostring(L, 2);
+        size_t gidLength = 0;
+        const char* gidStr = lua_tolstring(L, 2, &gidLength);
 
         uint64_t gid = 0;
-        if (!ParseUInt64Decimal(gidStr, &gid))
+        if (!ParseUInt64Decimal(std::string_view(gidStr, gidLength), &gid) || gid == 0)
             return luaL_error(L, "setManifestid: gid must be all digits");
 
         ManifestOverride override{ gid, 0 };
@@ -412,8 +496,10 @@ namespace LuaConfig{
         AppId_t appId = static_cast<uint32_t>(val);
 
         const char* sidStr = lua_tostring(L, 2);
+        size_t sidLength = 0;
+        sidStr = lua_tolstring(L, 2, &sidLength);
         uint64_t steamId = 0;
-        if (!ParseUInt64Decimal(sidStr, &steamId))
+        if (!ParseUInt64Decimal(std::string_view(sidStr, sidLength), &steamId))
             return luaL_error(L, "setStat: steamId must be all digits");
 
         StatSteamIdSet[appId] = steamId;
@@ -443,6 +529,7 @@ namespace LuaConfig{
 
     // ── init / cleanup ───────────────────────────────────────────
     static bool Initialize() {
+        std::lock_guard lock(g_luaMutex);
         if (g_lua_state)
             return true;
         g_lua_state = luaL_newstate();
@@ -479,31 +566,39 @@ namespace LuaConfig{
     }
 
     static void Cleanup() {
+        std::lock_guard lock(g_luaMutex);
         if (g_lua_state) {
             lua_close(g_lua_state);
             g_lua_state = nullptr;
         }
         g_hasManifestCodeFunc = false;
+        g_hasManifestCodeFuncEx = false;
     }
 
     // ── public query API ─────────────────────────────────────────
     bool HasDepot(AppId_t DepotId,bool excludeOwned) {
-        return DepotKeySet.count(DepotId) && (!excludeOwned || !IsOwned(DepotId));
+        std::shared_lock lock(g_depotDataMutex);
+        return DepotKeySet.contains(DepotId) &&
+               (!excludeOwned || !OwnedAppIdSet.contains(DepotId));
     }
 
     bool IsOwned(AppId_t AppId) {
-        return OwnedAppIdSet.count(AppId);
+        std::shared_lock lock(g_depotDataMutex);
+        return OwnedAppIdSet.contains(AppId);
     }
 
     bool IsForcedDenuvo(AppId_t appId) {
+        std::lock_guard lock(g_luaMutex);
         return ForcedDenuvoSet.count(appId) > 0;
     }
 
     bool IsForcedNonDenuvo(AppId_t appId) {
+        std::lock_guard lock(g_luaMutex);
         return ForcedNonDenuvoSet.count(appId) > 0;
     }
 
     void MarkOwned(AppId_t AppId) {
+        std::unique_lock lock(g_depotDataMutex);
         if(!OwnedAppIdSet.count(AppId)) {
             LOG_PACKAGE_INFO("Marking app {} as owned", AppId);
             OwnedAppIdSet.insert(AppId);
@@ -511,7 +606,9 @@ namespace LuaConfig{
     }
 
     std::vector<AppId_t> GetAllDepotIds() {
+        std::shared_lock lock(g_depotDataMutex);
         std::vector<AppId_t> DepotIds;
+        DepotIds.reserve(DepotKeySet.size());
         for (const auto& pair : DepotKeySet) {
             DepotIds.push_back(pair.first);
         }
@@ -520,17 +617,18 @@ namespace LuaConfig{
 
     std::vector<uint8> GetDecryptionKey(AppId_t DepotId) {
         std::vector<uint8> keyBytes;
-        if (DepotKeySet.count(DepotId)) {
-            const std::string& keyStr = DepotKeySet[DepotId];
-            // Convert hex string to byte vector.
-            for (size_t i = 0; i < keyStr.length(); i += 2) {
-                keyBytes.push_back(ParseHexByte(std::string_view(keyStr).substr(i, 2)));
-            }
-        }
+        std::shared_lock lock(g_depotDataMutex);
+        const auto it = DepotKeySet.find(DepotId);
+        if (it == DepotKeySet.end() || !IsValidDepotKey(it->second)) return keyBytes;
+
+        keyBytes.reserve(it->second.size() / 2);
+        for (size_t i = 0; i < it->second.size(); i += 2)
+            keyBytes.push_back(ParseHexByte(std::string_view(it->second).substr(i, 2)));
         return keyBytes;
     }
 
     uint64_t GetAccessToken(AppId_t AppId) {
+        std::lock_guard lock(g_luaMutex);
         if (AccessTokenSet.count(AppId)) {
             return AccessTokenSet[AppId];
         }
@@ -542,8 +640,11 @@ namespace LuaConfig{
     }
 
     uint64_t GetStatSteamId(AppId_t AppId) {
-        if (StatSteamIdSet.count(AppId))
-            return StatSteamIdSet[AppId];
+        {
+            std::lock_guard lock(g_luaMutex);
+            const auto it = StatSteamIdSet.find(AppId);
+            if (it != StatSteamIdSet.end()) return it->second;
+        }
         uint64_t apiSteamId = 0;
         if (StatsClient::FetchStatSteamId(AppId, &apiSteamId))
             return apiSteamId;
@@ -551,24 +652,30 @@ namespace LuaConfig{
     }
 
     uint32_t GetPurchaseTime(AppId_t AppId) {
+        std::shared_lock lock(g_depotDataMutex);
         auto it = g_purchaseTime.find(AppId);
         return it != g_purchaseTime.end() ? it->second : 0;
     }
 
-    const std::unordered_map<uint64_t, ManifestOverride>& GetManifestOverrides() {
-      return ManifestOverrides;
+    std::unordered_map<uint64_t, ManifestOverride> GetManifestOverrides() {
+        std::lock_guard lock(g_luaMutex);
+        return ManifestOverrides;
     }
 
     bool HasManifestCodeFunc() {
+        std::lock_guard lock(g_luaMutex);
         return g_hasManifestCodeFunc;
     }
 
     bool CallManifestFetchCode(uint64_t gid, uint64_t* outCode) {
+        std::lock_guard lock(g_luaMutex);
         if (!g_hasManifestCodeFunc || !g_lua_state)
             return false;
+        if (!outCode) return false;
+        *outCode = 0;
 
         lua_getglobal(g_lua_state, "fetch_manifest_code");
-        lua_pushinteger(g_lua_state, static_cast<lua_Integer>(gid));
+        PushUInt64(g_lua_state, gid);
 
         if (lua_pcall(g_lua_state, 1, 1, 0) != LUA_OK) {
             LOG_MANIFEST_WARN("fetch_manifest_code({}) error: {}", gid,
@@ -587,11 +694,17 @@ namespace LuaConfig{
         // The function must return a digit string (uint64 as decimal).
         // tonumber() loses precision for values > 2^53; string is safe.
         if (lua_isinteger(g_lua_state, -1)) {
-            *outCode = static_cast<uint64_t>(lua_tointeger(g_lua_state, -1));
+            const lua_Integer value = lua_tointeger(g_lua_state, -1);
+            if (value <= 0) {
+                lua_pop(g_lua_state, 1);
+                return false;
+            }
+            *outCode = static_cast<uint64_t>(value);
         } else if (lua_isstring(g_lua_state, -1)) {
-            const char* s = lua_tostring(g_lua_state, -1);
+            size_t length = 0;
+            const char* s = lua_tolstring(g_lua_state, -1, &length);
             uint64_t parsed = 0;
-            if (!ParseUInt64Decimal(s, &parsed)) {
+            if (!ParseUInt64Decimal(std::string_view(s, length), &parsed) || parsed == 0) {
                 LOG_MANIFEST_WARN("fetch_manifest_code({}) returned invalid numeric string '{}'",
                                  gid, s);
                 lua_pop(g_lua_state, 1);
@@ -611,17 +724,21 @@ namespace LuaConfig{
     }
 
     bool HasManifestCodeFuncEx() {
+        std::lock_guard lock(g_luaMutex);
         return g_hasManifestCodeFuncEx;
     }
 
     bool CallManifestFetchCodeEx(uint64_t app_id, uint64_t depot_id, uint64_t gid, uint64_t* outCode) {
+        std::lock_guard lock(g_luaMutex);
         if (!g_hasManifestCodeFuncEx || !g_lua_state)
             return false;
+        if (!outCode) return false;
+        *outCode = 0;
 
         lua_getglobal(g_lua_state, "fetch_manifest_code_ex");
-        lua_pushinteger(g_lua_state, static_cast<lua_Integer>(app_id));
-        lua_pushinteger(g_lua_state, static_cast<lua_Integer>(depot_id));
-        lua_pushinteger(g_lua_state, static_cast<lua_Integer>(gid));
+        PushUInt64(g_lua_state, app_id);
+        PushUInt64(g_lua_state, depot_id);
+        PushUInt64(g_lua_state, gid);
 
         if (lua_pcall(g_lua_state, 3, 1, 0) != LUA_OK) {
             LOG_MANIFEST_WARN("fetch_manifest_code_ex({}, {}, {}) error: {}", app_id, depot_id, gid,
@@ -637,11 +754,17 @@ namespace LuaConfig{
         }
 
         if (lua_isinteger(g_lua_state, -1)) {
-            *outCode = static_cast<uint64_t>(lua_tointeger(g_lua_state, -1));
+            const lua_Integer value = lua_tointeger(g_lua_state, -1);
+            if (value <= 0) {
+                lua_pop(g_lua_state, 1);
+                return false;
+            }
+            *outCode = static_cast<uint64_t>(value);
         } else if (lua_isstring(g_lua_state, -1)) {
-            const char* s = lua_tostring(g_lua_state, -1);
+            size_t length = 0;
+            const char* s = lua_tolstring(g_lua_state, -1, &length);
             uint64_t parsed = 0;
-            if (!ParseUInt64Decimal(s, &parsed)) {
+            if (!ParseUInt64Decimal(std::string_view(s, length), &parsed) || parsed == 0) {
                 LOG_MANIFEST_WARN("fetch_manifest_code_ex({}, {}, {}) returned invalid numeric string '{}'",
                                  app_id, depot_id, gid, s);
                 lua_pop(g_lua_state, 1);
@@ -662,23 +785,38 @@ namespace LuaConfig{
 
     // ── per-file unload ────────────────────────────────────────
     void UnloadFile(const std::string& filePath) {
+        std::lock_guard luaLock(g_luaMutex);
         auto depotsIt = g_fileDepots.find(filePath);
         auto manifestIt = g_fileManifestOverrides.find(filePath);
         if (depotsIt == g_fileDepots.end() && manifestIt == g_fileManifestOverrides.end()) return;
 
         if (depotsIt != g_fileDepots.end()) {
+            std::unique_lock lock(g_depotDataMutex);
+            std::vector<AppId_t> affectedDepots;
+            affectedDepots.reserve(depotsIt->second.size());
             for (AppId_t id : depotsIt->second) {
-                LOG_PACKAGE_DEBUG("UnloadFile:Ref count for AppId {} is {}", id, g_depotRefCount[id]);
-                if (--g_depotRefCount[id] == 0) {
-                    g_depotRefCount.erase(id);
-                    DepotKeySet.erase(id);
+                auto refIt = g_depotRefCount.find(id);
+                if (refIt == g_depotRefCount.end()) {
+                    LOG_PACKAGE_WARN("UnloadFile: missing depot refcount for AppId {}", id);
+                    continue;
+                }
+                LOG_PACKAGE_DEBUG("UnloadFile:Ref count for AppId {} is {}", id, refIt->second);
+                if (refIt->second <= 1) {
+                    g_depotRefCount.erase(refIt);
                     g_purchaseTime.erase(id);
                     g_pendingRemovals.push_back(id);
+                } else {
+                    --refIt->second;
                 }
+                affectedDepots.push_back(id);
             }
 
             LOG_PACKAGE_INFO("UnloadFile: removed {} depots from {}", depotsIt->second.size(), filePath);
             g_fileDepots.erase(depotsIt);
+            g_fileDepotKeys.erase(filePath);
+            g_fileParseSequence.erase(filePath);
+            for (AppId_t id : affectedDepots)
+                RebuildDepotKeyLocked(id);
         }
 
         if (manifestIt != g_fileManifestOverrides.end()) {
@@ -732,6 +870,7 @@ namespace LuaConfig{
 
     // ── single-file parser ──────────────────────────────────────
     void ParseFile(const std::string& filePath) {
+        std::lock_guard luaLock(g_luaMutex);
         if (!Initialize()) return;
 
         // Remove old entries from this file before re-parsing.

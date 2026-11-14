@@ -42,9 +42,17 @@ namespace {
     };
     std::vector<ResolvedHandler> g_Handlers;
 
+    uint32 g_onlineFixAppIdHash = 0;
+    uint32 g_legacyTicketHash = 0;
+    size_t g_legacyTicketIndex = static_cast<size_t>(-1);
+
     static ResolvedHandler* FindHandler(EIPCInterface iface, uint32 funcHash) {
         for (auto& e : g_Handlers) {
             if (e.interfaceID == iface && e.funcHash == funcHash) return &e;
+        }
+        if (funcHash == g_legacyTicketHash && g_legacyTicketIndex < g_Handlers.size()) {
+            ResolvedHandler& e = g_Handlers[g_legacyTicketIndex];
+            if (e.interfaceID == iface) return &e;
         }
         return nullptr;
     }
@@ -74,12 +82,20 @@ namespace {
         if (!request.ok()) return dispatch;
         if (request.command() != EIPCCommand::InterfaceCall) return dispatch;
 
-        // Ignore calls when appId is not resolved or not in Lua config
-        if (!LuaConfig::HasDepot(Hooks_Misc::ResolveAppId())) return dispatch;
-
-        // Parse out the interface call header to find the handler
+        // Parse the method before applying the app gate: onlinefix needs the
+        // GetAppID method for a genuine app that is not in the Lua list.
         IPCMessages::IPCInterfaceCall call{request.body()};
         if (!call.ok()) return dispatch;
+
+        const bool onlineFixAppIdQuery =
+            Hooks_Misc::IsOnlineFixActive() &&
+            g_onlineFixAppIdHash != 0 &&
+            call.interfaceID() == EIPCInterface::IClientUtils &&
+            call.funcHash() == g_onlineFixAppIdHash;
+        if (!onlineFixAppIdQuery &&
+            !LuaConfig::HasDepot(Hooks_Misc::ResolveAppId())) {
+            return dispatch;
+        }
 
         // Lookup handler by interface ID + method hash
         dispatch.handler = FindHandler(call.interfaceID(), call.funcHash());
@@ -163,6 +179,10 @@ namespace Hooks_IPC {
     }
 
     void Uninstall() {
+        g_Handlers.clear();
+        g_onlineFixAppIdHash = 0;
+        g_legacyTicketHash = 0;
+        g_legacyTicketIndex = static_cast<size_t>(-1);
         UNHOOK_BEGIN();
         UNINSTALL_HOOK_C(IPCProcessMessage);
         UNHOOK_END();
@@ -176,6 +196,17 @@ namespace Hooks_IPC {
                 continue;
             }
             auto& handler = g_Handlers.emplace_back(e,*m);
+            if (handler.interfaceID == EIPCInterface::IClientUtils &&
+                strcmp(e.methodName, "GetAppID") == 0) {
+                g_onlineFixAppIdHash = handler.funcHash;
+            }
+            if (handler.interfaceID == EIPCInterface::IClientUser &&
+                strcmp(e.methodName, "GetAppOwnershipTicketExtendedData") == 0) {
+                g_legacyTicketHash = 0xC7E71244;
+                g_legacyTicketIndex = g_Handlers.size() - 1;
+                LOG_IPC_INFO("Hooks_IPC: legacy ticket hash 0x{:08X} also accepted",
+                             g_legacyTicketHash);
+            }
             LOG_IPC_DEBUG("Hooks_IPC: resolved {}", handler.DebugString());
         }
     }
