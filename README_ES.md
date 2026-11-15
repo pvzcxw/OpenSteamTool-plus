@@ -1,3 +1,5 @@
+> Actualmente hay muchas acciones en Steam, y este proyecto está siendo reparado con urgencia. Por favor, no utilice este proyecto más. Lo sentimos
+
 <div align="center">
   <img src="docs/logo-animated.svg" width="180" alt="Logo de OpenSteamTool">
 

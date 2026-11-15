@@ -1,3 +1,5 @@
+> 目前steam的动作很多，现在这个项目正在加紧修复，请不要再使用这个项目。 抱歉
+
 <div align="center">
   <img src="docs/logo-animated.svg" width="180" alt="OpenSteamTool logo">
 
