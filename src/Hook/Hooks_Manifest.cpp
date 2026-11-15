@@ -1,8 +1,11 @@
 #include "Hooks_Manifest.h"
 #include "Hooks_Package.h"
+#include "Hooks_Misc.h"
 #include "HookMacros.h"
 #include "dllmain.h"
+#include <algorithm>
 #include <format>
+#include <string>
 
 // ═══════════════════════════════════════════════════════════════════
 //  Manifest override hooks:
@@ -15,6 +18,26 @@ namespace {
         return std::format("DepotId={} AppId={} Gid={} Size={} Dlc={} Lcs={} Carry={} Shared={}",
             e.DepotId, e.AppId, e.ManifestGid, e.ManifestSize, e.DlcAppId,
             (int)e.LcsRequired, (int)e.bNotNewTarget, (int)e.SharedInstall);
+    }
+
+    std::string DepotIdList(const CUtlVector<DepotEntry>* entries) {
+        if (!entries) return "<null>";
+        if ((entries->m_Size != 0 && !entries->m_Memory.m_pMemory) ||
+            entries->m_Size > entries->m_Memory.m_nAllocationCount)
+            return std::format("<invalid size={} allocation={} memory=0x{:X}>",
+                entries->m_Size, entries->m_Memory.m_nAllocationCount,
+                reinterpret_cast<uintptr_t>(entries->m_Memory.m_pMemory));
+
+        std::string ids = "[";
+        const uint32 count = (std::min)(entries->m_Size, 32u);
+        for (uint32 i = 0; i < count; ++i) {
+            if (i) ids += ',';
+            ids += std::to_string(entries->m_Memory.m_pMemory[i].DepotId);
+        }
+        if (entries->m_Size > count)
+            ids += std::format(",...(+{})", entries->m_Size - count);
+        ids += ']';
+        return ids;
     }
 
     HOOK_FUNC(BuildDepotDependency, bool, void* pUserAppMgr, AppId_t AppId,
@@ -44,11 +67,21 @@ namespace {
         const uint64_t outputDepotCount =
             static_cast<uint64_t>(pDepotInfo ? pDepotInfo->m_Size : 0) +
             static_cast<uint64_t>(pSharedDepotInfo ? pSharedDepotInfo->m_Size : 0);
-        if (outputDepotCount == 0 && LuaConfig::HasDepot(AppId, false)) {
+        const bool configuredApp = LuaConfig::HasDepot(AppId, false);
+        const bool appInfoNameAvailable = Hooks_Misc::IsAppInfoId(AppId);
+        if (outputDepotCount == 0 && configuredApp) {
             // Startup license indexing may finish before package 0 is filled.
             // Request one retry per app; Hooks_Package consumes it from the
             // next CheckAppOwnership call on Steam's own client thread.
             Hooks_Package::RequestLicenseRebuild(AppId);
+            LOG_MANIFEST_WARN("BuildDepotDependency: zero output for configured app {} (original_result={} appinfo_common_name={} own_count={} shared_count={} build_id={} beta_fallback={} pUserConfig=0x{:X} pSteamApp=0x{:X}); queued a license-index retry",
+                AppId, result, appInfoNameAvailable,
+                pDepotInfo ? pDepotInfo->m_Size : 0,
+                pSharedDepotInfo ? pSharedDepotInfo->m_Size : 0,
+                pBuildId ? *pBuildId : 0, pbBetaFallback ? *pbBetaFallback : false,
+                reinterpret_cast<uintptr_t>(pUserConfig), reinterpret_cast<uintptr_t>(pSteamApp));
+            LOG_MANIFEST_WARN("BuildDepotDependency: empty-result details for app {} own_depot_ids={} shared_depot_ids={}",
+                AppId, DepotIdList(pDepotInfo), DepotIdList(pSharedDepotInfo));
         }
 
         // Steam can transiently clear an app's cached depot config while
@@ -59,10 +92,22 @@ namespace {
         // depot list. Fail this pass so Steam retains the previous config and
         // retries after the pending license/appinfo refresh.
         if (result && AppId != 0 && (!pDepotInfo || pDepotInfo->m_Size == 0) &&
-            LuaConfig::HasDepot(AppId, false)) {
-            LOG_MANIFEST_WARN("BuildDepotDependency: configured app {} returned no own depots (shared={}); preserving the previous depot config",
-                AppId, pSharedDepotInfo ? pSharedDepotInfo->m_Size : 0);
+            configuredApp) {
+            LOG_MANIFEST_WARN("BuildDepotDependency: configured app {} returned success with no own depots (shared_count={} appinfo_common_name={} build_id={} beta_fallback={} own_depot_ids={} shared_depot_ids={}); preserving the previous depot config",
+                AppId, pSharedDepotInfo ? pSharedDepotInfo->m_Size : 0,
+                appInfoNameAvailable, pBuildId ? *pBuildId : 0,
+                pbBetaFallback ? *pbBetaFallback : false,
+                DepotIdList(pDepotInfo), DepotIdList(pSharedDepotInfo));
             return false;
+        }
+
+        if (!result && configuredApp) {
+            LOG_MANIFEST_WARN("BuildDepotDependency: original function failed for configured app {} (own_count={} shared_count={} appinfo_common_name={} build_id={} beta_fallback={} own_depot_ids={} shared_depot_ids={})",
+                AppId, pDepotInfo ? pDepotInfo->m_Size : 0,
+                pSharedDepotInfo ? pSharedDepotInfo->m_Size : 0,
+                appInfoNameAvailable, pBuildId ? *pBuildId : 0,
+                pbBetaFallback ? *pbBetaFallback : false,
+                DepotIdList(pDepotInfo), DepotIdList(pSharedDepotInfo));
         }
 
         if (!result) return result;

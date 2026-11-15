@@ -10,8 +10,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <format>
 #include <limits>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -35,7 +37,9 @@ namespace {
     std::unordered_map<AppId_t, std::chrono::steady_clock::time_point> g_lastRebuildRequest;
     std::unordered_set<AppId_t> g_pendingRebuilds;
     std::chrono::steady_clock::time_point g_lastLicenseProcessAttempt{};
-    std::atomic<uint32_t> g_depotGateLogCount{0};
+    std::atomic<uint32_t> g_depotGateConfiguredLogCount{0};
+    std::atomic<uint32_t> g_depotGatePassThroughLogCount{0};
+    std::atomic<uint32_t> g_ownershipDiagnosticCount{0};
     thread_local bool g_processingLicenseUpdate = false;
 
     constexpr PackageId_t kInjectedPackageId = 0;
@@ -45,6 +49,57 @@ namespace {
     // 0x138000000. Resolve by RVA under ASLR and validate the exact function
     // boundary against the loaded image's exception directory (.pdata).
     constexpr uintptr_t kDepotLicenseGateRva = 0x9FDA30ull;
+
+    template <typename T>
+    std::string FormatIdVector(const CUtlVector<T>& vec, size_t maxItems = 48)
+    {
+        if ((vec.m_Size != 0 && !vec.m_Memory.m_pMemory) ||
+            vec.m_Size > vec.m_Memory.m_nAllocationCount)
+            return std::format("<invalid size={} allocation={}>",
+                               vec.m_Size, vec.m_Memory.m_nAllocationCount);
+
+        std::string ids = "[";
+        const uint32 count = static_cast<uint32>((std::min)(static_cast<size_t>(vec.m_Size), maxItems));
+        for (uint32 i = 0; i < count; ++i)
+        {
+            if (i) ids += ',';
+            ids += std::to_string(vec.m_Memory.m_pMemory[i]);
+        }
+        if (vec.m_Size > count)
+            ids += std::format(",...(+{})", vec.m_Size - count);
+        ids += ']';
+        return ids;
+    }
+
+    std::string PackageVectorsDebug(const PackageInfo* pkg)
+    {
+        if (!pkg) return "<package-null>";
+        return std::format("apps(size={},alloc={},ids={}) depots(size={},alloc={},ids={})",
+                           pkg->AppIdVec.m_Size, pkg->AppIdVec.m_Memory.m_nAllocationCount,
+                           FormatIdVector(pkg->AppIdVec),
+                           pkg->DepotIdVec.m_Size, pkg->DepotIdVec.m_Memory.m_nAllocationCount,
+                           FormatIdVector(pkg->DepotIdVec));
+    }
+
+    template <typename T>
+    bool VectorContainsId(const CUtlVector<T>& vec, T id)
+    {
+        if ((vec.m_Size != 0 && !vec.m_Memory.m_pMemory) ||
+            vec.m_Size > vec.m_Memory.m_nAllocationCount)
+            return false;
+        for (uint32 i = 0; i < vec.m_Size; ++i)
+            if (vec.m_Memory.m_pMemory[i] == id)
+                return true;
+        return false;
+    }
+
+    std::string PackageIdMembershipDebug(const PackageInfo* pkg, AppId_t id)
+    {
+        if (!pkg) return "<package-null>";
+        return std::format("id={} in_apps={} in_depots={}", id,
+                           VectorContainsId(pkg->AppIdVec, id),
+                           VectorContainsId(pkg->DepotIdVec, id));
+    }
 
     void* ResolveDepotLicenseGate()
     {
@@ -163,7 +218,7 @@ namespace {
             return false;
         g_lastLicenseProcessAttempt = now;
 
-        oMarkLicenseAsChanged(g_pCUser, kInjectedPackageId, true);
+        const int64 markResult = oMarkLicenseAsChanged(g_pCUser, kInjectedPackageId, true);
         g_processingLicenseUpdate = true;
         const bool processed = oProcessPendingLicenseUpdates(g_pCUser);
         g_processingLicenseUpdate = false;
@@ -171,11 +226,13 @@ namespace {
         {
             // False means Steam kept the pending app/package lists rather
             // than swapping the index; retry on a later client-thread pass.
-            LOG_PACKAGE_DEBUG("MarkLicenseAsChangedAndProcessUpdates: Steam deferred the index swap");
+            LOG_PACKAGE_WARN("MarkLicenseAsChangedAndProcessUpdates: index swap deferred (mark_result={} package_vectors={})",
+                             markResult, PackageVectorsDebug(g_pInjectedPackageInfo));
             return false;
         }
-        LOG_PACKAGE_DEBUG("MarkLicenseAsChangedAndProcessUpdates: marked package {} as changed and processed updates",
-                          kInjectedPackageId);
+        LOG_PACKAGE_INFO("MarkLicenseAsChangedAndProcessUpdates: index rebuilt (package={} mark_result={} package_vectors={})",
+                         kInjectedPackageId, markResult,
+                         PackageVectorsDebug(g_pInjectedPackageInfo));
         return true;
     }
 
@@ -336,7 +393,11 @@ namespace {
 
     bool IsConfiguredDepot(AppId_t id)
     {
-        return id != 0 && LuaConfig::HasDepot(id, false) && !Hooks_Misc::IsAppInfoId(id);
+        // App IDs and depot IDs share a numeric namespace. Appinfo-backed
+        // configured IDs must stay in AppIdVec for index bookkeeping, but that
+        // must not stop an ID from satisfying the depot gate when Steam asks
+        // about that same numeric depot ID.
+        return id != 0 && LuaConfig::HasDepot(id, false);
     }
 
     std::vector<AppId_t> TakePendingRebuilds()
@@ -374,8 +435,8 @@ namespace {
         // startup index pass can finish before package 0 is populated.
         g_licenseRefreshPending = true;
         TryProcessPendingLicenseRefresh();
-        LOG_PACKAGE_INFO("InitFakeLicense(PackageId={}): synchronized app IDs and depot IDs (changed={})",
-                         kInjectedPackageId, changed);
+        LOG_PACKAGE_INFO("InitFakeLicense(PackageId={}): synchronized app/depot vectors changed={} {}",
+                         kInjectedPackageId, changed, PackageVectorsDebug(pPkg));
         return true;
     }
 
@@ -399,14 +460,24 @@ namespace {
 
     HOOK_FUNC(DepotLicenseGate, bool, void* pUser, AppId_t depotId, AppId_t appId)
     {
-        if (IsConfiguredDepot(depotId))
+        const bool configuredDepot = IsConfiguredDepot(depotId);
+        if (configuredDepot)
         {
-            if (g_depotGateLogCount.fetch_add(1, std::memory_order_relaxed) < 8)
-                LOG_PACKAGE_DEBUG("DepotLicenseGate: granted configured depot {} for app {}",
-                                  depotId, appId);
+            if (g_depotGateConfiguredLogCount.fetch_add(1, std::memory_order_relaxed) < 128)
+                LOG_PACKAGE_INFO("DepotLicenseGate: granting configured depot={} app={} appinfo_id={} package_membership=[{}] user=0x{:X}",
+                                 depotId, appId, Hooks_Misc::IsAppInfoId(depotId),
+                                 PackageIdMembershipDebug(g_pInjectedPackageInfo, depotId),
+                                 reinterpret_cast<uintptr_t>(pUser));
+            LOG_PACKAGE_DEBUG("DepotLicenseGate: granted configured depot {} for app {}",
+                              depotId, appId);
             return true;
         }
-        return oDepotLicenseGate(pUser, depotId, appId);
+
+        const bool result = oDepotLicenseGate(pUser, depotId, appId);
+        if (g_depotGatePassThroughLogCount.fetch_add(1, std::memory_order_relaxed) < 32)
+            LOG_PACKAGE_INFO("DepotLicenseGate: passed through depot={} app={} original_result={} user=0x{:X}",
+                             depotId, appId, result, reinterpret_cast<uintptr_t>(pUser));
+        return result;
     }
 
     HOOK_FUNC(CheckAppOwnership, bool, void* pObj, AppId_t appId, AppOwnership* pOwn)
@@ -418,6 +489,24 @@ namespace {
         }
 
         const bool result = oCheckAppOwnership(pObj, appId, pOwn);
+        const bool configuredApp = LuaConfig::HasDepot(appId, false);
+        const bool logOwnership = configuredApp && pOwn &&
+            g_ownershipDiagnosticCount.fetch_add(1, std::memory_order_relaxed) < 64;
+        const PackageId_t originalPackageId = pOwn ? pOwn->PackageId : 0;
+        const uint32 originalPackageCount = pOwn ? pOwn->ExistInPackageNums : 0;
+        const EAppReleaseState originalReleaseState = pOwn ? pOwn->ReleaseState : EAppReleaseState{};
+        const bool originalOwnsLicense = pOwn && pOwn->bOwnsLicense;
+        const bool originalLicensePending = pOwn && pOwn->bLicensePending;
+        if (logOwnership)
+        {
+            LOG_PACKAGE_WARN("CheckAppOwnership input: app={} result={} package={} package_count={} release_state={} owns_license={} license_pending={} appinfo_common_name={} initialized={} refresh_pending={} membership=[{}] vectors={}",
+                             appId, result, originalPackageId, originalPackageCount,
+                             static_cast<int>(originalReleaseState), originalOwnsLicense,
+                             originalLicensePending, Hooks_Misc::IsAppInfoId(appId),
+                             g_licenseInitialized, g_licenseRefreshPending,
+                             PackageIdMembershipDebug(g_pInjectedPackageInfo, appId),
+                             PackageVectorsDebug(g_pInjectedPackageInfo));
+        }
         if (g_processingLicenseUpdate)
         {
             if (pOwn && LuaConfig::HasDepot(appId, false))
@@ -426,6 +515,10 @@ namespace {
                 pOwn->ReleaseState = EAppReleaseState::Released;
                 pOwn->bOwnsLicense = true;
                 pOwn->bFreeLicense = false;
+                if (logOwnership)
+                    LOG_PACKAGE_WARN("CheckAppOwnership output during index rebuild: app={} package={} package_count={} owns_license={} license_pending={}",
+                                     appId, pOwn->PackageId, pOwn->ExistInPackageNums,
+                                     pOwn->bOwnsLicense, pOwn->bLicensePending);
                 return true;
             }
             return result;
@@ -481,6 +574,10 @@ namespace {
                 // This is a real license, not the package-0 entry we injected.
                 LuaConfig::MarkOwned(appId);
                 pOwn->ReleaseState = EAppReleaseState::Released;
+                if (logOwnership)
+                    LOG_PACKAGE_WARN("CheckAppOwnership output: app={} kept real license package={} package_count={} owns_license={} license_pending={}",
+                                     appId, pOwn->PackageId, pOwn->ExistInPackageNums,
+                                     pOwn->bOwnsLicense, pOwn->bLicensePending);
             }
             else
             {
@@ -488,6 +585,12 @@ namespace {
                 pOwn->ReleaseState = EAppReleaseState::Released;
                 pOwn->bOwnsLicense = true;
                 pOwn->bFreeLicense = false;
+                if (logOwnership)
+                    LOG_PACKAGE_WARN("CheckAppOwnership output: app={} assigned injected package={} package_count={} owns_license={} license_pending={} membership=[{}] vectors={}",
+                                     appId, pOwn->PackageId, pOwn->ExistInPackageNums,
+                                     pOwn->bOwnsLicense, pOwn->bLicensePending,
+                                     PackageIdMembershipDebug(g_pInjectedPackageInfo, appId),
+                                     PackageVectorsDebug(g_pInjectedPackageInfo));
                 return true;
             }
         }
@@ -516,6 +619,12 @@ namespace Hooks_Package {
                 oDepotLicenseGate = nullptr;
                 _ost_detour_transaction_ok_ = false;
                 LOG_PACKAGE_WARN("DepotLicenseGate detour attach failed");
+            }
+            else
+            {
+                LOG_PACKAGE_INFO("DepotLicenseGate detour attached: target=0x{:X} trampoline=0x{:X}",
+                                 reinterpret_cast<uintptr_t>(gateTarget),
+                                 reinterpret_cast<uintptr_t>(oDepotLicenseGate));
             }
         }
         else

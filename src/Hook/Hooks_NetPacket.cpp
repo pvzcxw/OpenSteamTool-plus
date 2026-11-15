@@ -7,7 +7,9 @@
 #include "Utils/Tickets/AppTicket.h"
 #include "Utils/Support/FnvHash.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
+#include <algorithm>
 #include <chrono>
+#include <format>
 #include <limits>
 #include <atomic>
 #include <cstring>
@@ -263,6 +265,20 @@ namespace
     constexpr uint32 HASH_JOB_GetUserStats = Fnv1aHash("Player.GetUserStats#1");
     constexpr uint32 HASH_JOB_GetManifestRequestCode = Fnv1aHash("ContentServerDirectory.GetManifestRequestCode#1");
 
+    std::string FormatAppIdList(const std::vector<AppId_t>& ids, size_t maxItems = 48)
+    {
+        std::string formatted;
+        const size_t count = (std::min)(ids.size(), maxItems);
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (i) formatted += ',';
+            formatted += std::to_string(ids[i]);
+        }
+        if (ids.size() > count)
+            formatted += std::format(",...(+{})", ids.size() - count);
+        return formatted;
+    }
+
 } // anonymous namespace
 
 // ════════════════════════════════════════════════════════════════
@@ -301,7 +317,8 @@ namespace Hooks_NetPacket_AccessToken
         const bool originalContainsFullData =
             !req.has_meta_data_only() || !req.meta_data_only();
         CMsgClientPICSProductInfoRequest configuredReq;
-        size_t requestedCount = 0;
+        std::vector<AppId_t> requestedIds;
+        requestedIds.reserve(configuredIds.size());
         for (AppId_t appId : configuredIds)
         {
             if (appId == 0 ||
@@ -314,10 +331,10 @@ namespace Hooks_NetPacket_AccessToken
             {
                 app->set_access_token(token);
             }
-            ++requestedCount;
+            requestedIds.push_back(appId);
         }
 
-        if (requestedCount == 0)
+        if (requestedIds.empty())
             return;
 
         configuredReq.set_meta_data_only(false);
@@ -330,7 +347,7 @@ namespace Hooks_NetPacket_AccessToken
         if (bodySize > kMaxBodySize)
         {
             LOG_PICS_WARN("Configured PICS request is too large ({} bytes, {} IDs)",
-                          bodySize, requestedCount);
+                          bodySize, requestedIds.size());
             return;
         }
         configuredRequestBody.resize(bodySize);
@@ -342,9 +359,86 @@ namespace Hooks_NetPacket_AccessToken
             return;
         }
 
-        LOG_PICS_INFO("Queued targeted full appinfo request: {} IDs ({} bytes); original {}-app request remains unchanged (meta_data_only={})",
-                      requestedCount, bodySize, req.apps_size(),
-                      req.has_meta_data_only() ? req.meta_data_only() : false);
+        LOG_PICS_INFO("Queued targeted full appinfo request: IDs=[{}] ({} bytes, sequence={}, meta_data_only=false); original {}-app request remains unchanged (meta_data_only={})",
+                      FormatAppIdList(requestedIds), bodySize,
+                      req.has_sequence_number() ? req.sequence_number() : 0,
+                      req.apps_size(), req.has_meta_data_only() ? req.meta_data_only() : false);
+    }
+
+    void HandleRecv(const uint8 *pBody, uint32 cbBody)
+    {
+        CMsgClientPICSProductInfoResponse response;
+        if (!response.ParseFromArray(pBody, static_cast<int>(cbBody)))
+        {
+            LOG_PICS_WARN("Failed to parse PICS product-info response eMsg=8904 (body={} bytes)", cbBody);
+            return;
+        }
+
+        const std::vector<AppId_t> configuredIds = LuaConfig::GetAllConfiguredIds();
+        std::unordered_map<AppId_t, const CMsgClientPICSProductInfoResponse::AppInfo*> appRecords;
+        appRecords.reserve(static_cast<size_t>(response.apps_size()));
+        std::vector<AppId_t> responseAppIds;
+        responseAppIds.reserve(static_cast<size_t>(response.apps_size()));
+        for (const auto& app : response.apps())
+        {
+            if (!app.has_appid())
+                continue;
+            responseAppIds.push_back(app.appid());
+            appRecords.insert_or_assign(app.appid(), &app);
+        }
+
+        std::vector<AppId_t> unknownAppIds;
+        size_t missingTokenCount = 0;
+        size_t emptyBufferCount = 0;
+        for (const auto& app : response.apps())
+        {
+            if (app.has_missing_token() && app.missing_token()) ++missingTokenCount;
+            if (app.has_unknown_app() && app.unknown_app()) unknownAppIds.push_back(app.appid());
+            if (!app.has_buffer() || app.buffer().empty()) ++emptyBufferCount;
+        }
+
+        LOG_PICS_INFO("PICS response eMsg=8904: body={} bytes apps={} packages={} missing_token={} unknown_apps={} empty_buffers={} response_pending={} http_min_interval={} configured_ids={} app_ids=[{}] unknown_app_ids=[{}]",
+                      cbBody, response.apps_size(), response.packages_size(),
+                      missingTokenCount, unknownAppIds.size(), emptyBufferCount,
+                      response.has_response_pending() ? response.response_pending() : 0,
+                      response.has_http_min_interval() ? response.http_min_interval() : 0,
+                      configuredIds.size(), FormatAppIdList(responseAppIds), FormatAppIdList(unknownAppIds));
+
+        size_t logged = 0;
+        for (const AppId_t appId : configuredIds)
+        {
+            if (logged++ >= 48)
+            {
+                LOG_PICS_INFO("PICS response diagnostics: omitted {} additional configured IDs",
+                              configuredIds.size() - 48);
+                break;
+            }
+
+            const auto it = appRecords.find(appId);
+            if (it == appRecords.end())
+            {
+                const bool explicitlyUnknown = std::find(unknownAppIds.begin(), unknownAppIds.end(), appId) != unknownAppIds.end();
+                LOG_PICS_WARN("PICS response packet has no app record for configured ID {} (explicitly_unknown={}, response_pending={}); another response packet may still contain it",
+                              appId, explicitlyUnknown,
+                              response.has_response_pending() ? response.response_pending() : 0);
+                continue;
+            }
+
+            const auto& app = *it->second;
+            const size_t bufferSize = app.has_buffer() ? app.buffer().size() : 0;
+            LOG_PICS_INFO("PICS app record {}: missing_token={} unknown_app={} has_buffer={} buffer_bytes={} access_token_present={}",
+                          appId, app.has_missing_token() ? app.missing_token() : false,
+                          app.has_unknown_app() ? app.unknown_app() : false,
+                          app.has_buffer(), bufferSize, app.has_access_token() && app.access_token() != 0);
+            if (!app.has_buffer() || bufferSize == 0 ||
+                (app.has_missing_token() && app.missing_token()) ||
+                (app.has_unknown_app() && app.unknown_app()))
+            {
+                LOG_PICS_WARN("PICS appinfo unavailable for configured ID {}: token_missing={} unknown_app={} buffer_bytes={}",
+                              appId, app.has_missing_token() && app.missing_token(),
+                              app.has_unknown_app() && app.unknown_app(), bufferSize);
+            }
+        }
     }
 
 } // namespace Hooks_NetPacket_AccessToken
@@ -1697,6 +1791,10 @@ namespace
 
         case k_EMsgClientGetAppOwnershipTicketResponse: // 858
             Hooks_NetPacket_OwnershipTicket::HandleRecv(pBody, cbBody);
+            return;
+
+        case k_EMsgClientPICSProductInfoResponse: // 8904
+            Hooks_NetPacket_AccessToken::HandleRecv(pBody, cbBody);
             return;
 
         default:
