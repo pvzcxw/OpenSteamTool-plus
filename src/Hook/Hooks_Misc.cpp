@@ -112,7 +112,10 @@ namespace Hooks_Misc {
         HOOK_BEGIN();
         INSTALL_HOOK_C(BuildSpawnEnvBlock);
         INSTALL_HOOK_C(OptedInMask);
-        // INSTALL_HOOK_C(GetOrAddAppData);
+        // Pending package-index rebuilds create CAppData placeholders for
+        // depot-only configured IDs. Mark those as deliberate unknowns so the
+        // appinfo walk can finish instead of waiting forever for depot data.
+        INSTALL_HOOK_C(GetOrAddAppData);
         HOOK_END();
     }
 
@@ -120,7 +123,7 @@ namespace Hooks_Misc {
         UNHOOK_BEGIN();
         UNINSTALL_HOOK(BuildSpawnEnvBlock);
         UNINSTALL_HOOK(OptedInMask);
-        // UNINSTALL_HOOK(GetOrAddAppData);
+        UNINSTALL_HOOK(GetOrAddAppData);
         UNHOOK_END();
     }
 
@@ -195,6 +198,21 @@ namespace Hooks_Misc {
         LOG_MISC_DEBUG("GetGameNameByAppID({}): {}", appId, name);
         g_GameNameCache[appId] = name;
         return name;
+    }
+
+    bool IsAppInfoId(AppId_t appId)
+    {
+        if (appId == 0 || !CAPTURE_READY(GetAppDataFromAppInfo))
+            return false;
+
+        // Appinfo's common/name is present for ordinary app records but is
+        // absent for depot-only IDs. Do not cache misses: a PICS response may
+        // populate the cache later in the same Steam session.
+        char name[256] = {};
+        const int64 len = oGetAppDataFromAppInfo(
+            g_pCAppInfoCache, appId, "common/name",
+            reinterpret_cast<uint8*>(name), static_cast<int32>(sizeof(name)));
+        return len > 1;
     }
 
 }
