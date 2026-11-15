@@ -36,4 +36,8 @@ namespace Hooks_Misc {
     // Get localized game name via GetAppDataFromAppInfo (cached).
     std::string GetGameNameByAppID(AppId_t appId);
 
+    // True when the client-side appinfo cache has metadata for this ID.
+    // Returns false until the GetAppDataFromAppInfo call site is captured.
+    bool IsAppInfoId(AppId_t appId);
+
 }

@@ -50,6 +50,9 @@ namespace
     uint32 g_cbSendNewBody = 0;
     bool g_NeedReplaceSend = false;
     bool g_SuppressSend = false; // drop the outbound frame entirely (cloud RPC answered locally)
+    // A separate, small PICS request for configured IDs. Keeping this thread-
+    // local avoids coupling it to the shared body-replacement scratch buffer.
+    thread_local std::vector<uint8> g_ConfiguredPicsBody;
     uint8 g_SendPacketPool[kPacketPoolSize][kMaxPacketSize];
     int g_SendPacketPoolIdx = 0;
 
@@ -270,74 +273,78 @@ namespace
 namespace Hooks_NetPacket_AccessToken
 {
 
-    bool HandleSend(const uint8 *pBody, uint32 cbBody)
+    void HandleSend(const uint8 *pBody, uint32 cbBody, std::vector<uint8>& configuredRequestBody)
     {
+        configuredRequestBody.clear();
         CMsgClientPICSProductInfoRequest req;
         if (!req.ParseFromArray(pBody, cbBody))
         {
             LOG_PICS_WARN("Failed to ParseFromArray CMsgClientPICSProductInfoRequest");
-            return false;
+            return;
         }
-        LOG_PICS_DEBUG("CMsgClientPICSProductInfoRequest original body:\n{}", req.DebugString());
 
-        bool needsPatch = false;
+        // Do not turn a normal, potentially 1K+ app metadata refresh into a
+        // full product-info request. That made Steam request the bodies for
+        // every app in the batch and the CM refresh timed out before configured
+        // appinfo was available. Preserve the original request byte-for-byte;
+        // send one separate full-data request containing only our configured
+        // IDs so appinfo can be populated without inflating Steam's batch.
+        std::unordered_set<AppId_t> requested;
+        requested.reserve(static_cast<size_t>(req.apps_size()) + 16);
         for (const auto &app : req.apps())
+            if (app.has_appid()) requested.insert(app.appid());
+
+        const std::vector<AppId_t> configuredIds = LuaConfig::GetAllConfiguredIds();
+        if (configuredIds.empty())
+            return;
+
+        const bool originalContainsFullData =
+            !req.has_meta_data_only() || !req.meta_data_only();
+        CMsgClientPICSProductInfoRequest configuredReq;
+        size_t requestedCount = 0;
+        for (AppId_t appId : configuredIds)
         {
-            if (LuaConfig::HasDepot(app.appid()) && LuaConfig::GetAccessToken(app.appid()))
+            if (appId == 0 ||
+                (originalContainsFullData && requested.contains(appId)))
+                continue;
+            auto *app = configuredReq.add_apps();
+            app->set_appid(appId);
+            const uint64_t token = LuaConfig::GetAccessToken(appId);
+            if (token)
             {
-                needsPatch = true;
-                LOG_PICS_DEBUG("CMsgClientPICSProductInfoRequest: found appid {} with access_token, need patching", app.appid());
-                break;
+                app->set_access_token(token);
             }
-        }
-        if (!needsPatch)
-        {
-            LOG_PICS_TRACE("CMsgClientPICSProductInfoRequest: no apps need token injection, skip");
-            return false;
+            ++requestedCount;
         }
 
-        int injected = 0, noToken = 0, notAddAppId = 0;
-        for (auto &app : *req.mutable_apps())
-        {
-            if (LuaConfig::HasDepot(app.appid()))
-            {
-                uint64_t token = LuaConfig::GetAccessToken(app.appid());
-                if (token)
-                {
-                    LOG_PICS_DEBUG("CMsgClientPICSProductInfoRequest: inject appid={}: {} -> {}", app.appid(),
-                                   app.has_access_token() ? std::to_string(app.access_token()) : "absent",
-                                   token);
-                    app.set_access_token(token);
-                    ++injected;
-                }
-                else
-                {
-                    LOG_PICS_WARN("CMsgClientPICSProductInfoRequest: skip appid={}: in depot, no token configured", app.appid());
-                    ++noToken;
-                }
-            }
-            else
-            {
-                ++notAddAppId;
-            }
-        }
-        LOG_PICS_DEBUG("CMsgClientPICSProductInfoRequest: injected={} no_token={} not_in_add_appid={} total={}",
-                       injected, noToken, notAddAppId, req.apps_size());
+        if (requestedCount == 0)
+            return;
 
-        g_cbSendNewBody = static_cast<uint32>(req.ByteSizeLong());
-        if (g_cbSendNewBody > kMaxBodySize)
+        configuredReq.set_meta_data_only(false);
+        if (req.has_sequence_number())
+            configuredReq.set_sequence_number(req.sequence_number());
+        if (req.has_single_response())
+            configuredReq.set_single_response(req.single_response());
+
+        const size_t bodySize = configuredReq.ByteSizeLong();
+        if (bodySize > kMaxBodySize)
         {
-            LOG_PICS_WARN("CMsgClientPICSProductInfoRequest: encoded size {} exceeds buffer", g_cbSendNewBody);
-            return false;
+            LOG_PICS_WARN("Configured PICS request is too large ({} bytes, {} IDs)",
+                          bodySize, requestedCount);
+            return;
         }
-        if (!req.SerializeToArray(g_SendNewBody, kMaxBodySize))
+        configuredRequestBody.resize(bodySize);
+        if (!configuredReq.SerializeToArray(configuredRequestBody.data(),
+                                             static_cast<int>(configuredRequestBody.size())))
         {
-            LOG_PICS_WARN("CMsgClientPICSProductInfoRequest: Failed to encode modified request");
-            return false;
+            configuredRequestBody.clear();
+            LOG_PICS_WARN("Failed to encode configured-only PICS request");
+            return;
         }
 
-        LOG_PICS_DEBUG("CMsgClientPICSProductInfoRequest: modified body: {}", req.DebugString());
-        return true;
+        LOG_PICS_INFO("Queued targeted full appinfo request: {} IDs ({} bytes); original {}-app request remains unchanged (meta_data_only={})",
+                      requestedCount, bodySize, req.apps_size(),
+                      req.has_meta_data_only() ? req.meta_data_only() : false);
     }
 
 } // namespace Hooks_NetPacket_AccessToken
@@ -1570,6 +1577,7 @@ namespace
     {
         g_NeedReplaceSend = false;
         g_SuppressSend = false;
+        g_ConfiguredPicsBody.clear();
 
         LOG_NETPACKET_DEBUG("Send eMsg {}({}) (cbBody={}, cbHdr={})",
                             MsgName(eMsg), static_cast<uint32>(eMsg), cbBody, cbHdr);
@@ -1588,7 +1596,7 @@ namespace
         }
 
         case k_EMsgClientPICSProductInfoRequest: // 8903
-            g_NeedReplaceSend = Hooks_NetPacket_AccessToken::HandleSend(pBody, cbBody);
+            Hooks_NetPacket_AccessToken::HandleSend(pBody, cbBody, g_ConfiguredPicsBody);
             return;
 
         case k_EMsgClientGamesPlayed:             // 742
@@ -1716,6 +1724,7 @@ namespace
         const uint8 *pHdr, *pBody;
         uint32 cbHdr, cbBody;
         bool result;
+        g_ConfiguredPicsBody.clear();
         if (UnpackRaw(pubData, cubData, eMsg, pHdr, cbHdr, pBody, cbBody))
         {
             Hooks_NetPacket_TicketFetch::CaptureContext(
@@ -1759,6 +1768,31 @@ namespace
             else
             {
                 result = oBBuildAndAsyncSendFrame(pObject, eWebSocketOpCode, pubData, cubData);
+            }
+
+            // Send the bounded full-data lookup only after the original frame
+            // was accepted. Calling the trampoline avoids re-entering this
+            // hook; ReplaceSendPacket preserves the original protobuf header.
+            if (result && eMsg == k_EMsgClientPICSProductInfoRequest &&
+                !g_ConfiguredPicsBody.empty())
+            {
+                uint32 configuredSize = 0;
+                uint8 *configuredPacket = ReplaceSendPacket(
+                    pubData, cbHdr, pHdr,
+                    g_ConfiguredPicsBody.data(),
+                    static_cast<uint32>(g_ConfiguredPicsBody.size()),
+                    &configuredSize);
+                if (configuredPacket)
+                {
+                    const bool configuredSent = oBBuildAndAsyncSendFrame(
+                        pObject, eWebSocketOpCode, configuredPacket, configuredSize);
+                    LOG_PICS_INFO("Targeted PICS request send {} ({} bytes)",
+                                  configuredSent ? "accepted" : "failed", configuredSize);
+                }
+                else
+                {
+                    LOG_PICS_WARN("Could not assemble targeted PICS request packet");
+                }
             }
         }
         else

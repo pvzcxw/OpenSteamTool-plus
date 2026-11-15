@@ -511,7 +511,12 @@ namespace LuaConfig{
     }
 
     std::vector<AppId_t> GetAllDepotIds() {
+        return GetAllConfiguredIds();
+    }
+
+    std::vector<AppId_t> GetAllConfiguredIds() {
         std::vector<AppId_t> DepotIds;
+        DepotIds.reserve(DepotKeySet.size());
         for (const auto& pair : DepotKeySet) {
             DepotIds.push_back(pair.first);
         }

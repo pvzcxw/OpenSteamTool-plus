@@ -1,4 +1,5 @@
 #include "Hooks_Manifest.h"
+#include "Hooks_Package.h"
 #include "HookMacros.h"
 #include "dllmain.h"
 #include <format>
@@ -38,6 +39,30 @@ namespace {
             for (uint32 i = 0; i < pSharedDepotInfo->m_Size; ++i) {
                 LOG_MANIFEST_TRACE("  shared[{}] {}", i, DepotEntryDebug(pSharedDepotInfo->m_Memory.m_pMemory[i]));
             }
+        }
+
+        const uint64_t outputDepotCount =
+            static_cast<uint64_t>(pDepotInfo ? pDepotInfo->m_Size : 0) +
+            static_cast<uint64_t>(pSharedDepotInfo ? pSharedDepotInfo->m_Size : 0);
+        if (outputDepotCount == 0 && LuaConfig::HasDepot(AppId, false)) {
+            // Startup license indexing may finish before package 0 is filled.
+            // Request one retry per app; Hooks_Package consumes it from the
+            // next CheckAppOwnership call on Steam's own client thread.
+            Hooks_Package::RequestLicenseRebuild(AppId);
+        }
+
+        // Steam can transiently clear an app's cached depot config while
+        // appinfo is being refreshed. The original builder may still return
+        // true with an empty own-depot vector; returning that success lets the
+        // caller persist an empty config and can complete an install with 0B.
+        // Shared depots belong to other apps and must not mask an empty own
+        // depot list. Fail this pass so Steam retains the previous config and
+        // retries after the pending license/appinfo refresh.
+        if (result && AppId != 0 && (!pDepotInfo || pDepotInfo->m_Size == 0) &&
+            LuaConfig::HasDepot(AppId, false)) {
+            LOG_MANIFEST_WARN("BuildDepotDependency: configured app {} returned no own depots (shared={}); preserving the previous depot config",
+                AppId, pSharedDepotInfo ? pSharedDepotInfo->m_Size : 0);
+            return false;
         }
 
         if (!result) return result;
