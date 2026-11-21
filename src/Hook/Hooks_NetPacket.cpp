@@ -7,7 +7,9 @@
 #include "Utils/Tickets/AppTicket.h"
 #include "Utils/Support/FnvHash.h"
 #include "Utils/CloudRedirect/CloudRedirectHost.h"
+#include <algorithm>
 #include <chrono>
+#include <format>
 #include <limits>
 #include <atomic>
 #include <cstring>
@@ -50,6 +52,9 @@ namespace
     uint32 g_cbSendNewBody = 0;
     bool g_NeedReplaceSend = false;
     bool g_SuppressSend = false; // drop the outbound frame entirely (cloud RPC answered locally)
+    // A separate, small PICS request for configured IDs. Keeping this thread-
+    // local avoids coupling it to the shared body-replacement scratch buffer.
+    thread_local std::vector<uint8> g_ConfiguredPicsBody;
     uint8 g_SendPacketPool[kPacketPoolSize][kMaxPacketSize];
     int g_SendPacketPoolIdx = 0;
 
@@ -260,6 +265,20 @@ namespace
     constexpr uint32 HASH_JOB_GetUserStats = Fnv1aHash("Player.GetUserStats#1");
     constexpr uint32 HASH_JOB_GetManifestRequestCode = Fnv1aHash("ContentServerDirectory.GetManifestRequestCode#1");
 
+    std::string FormatAppIdList(const std::vector<AppId_t>& ids, size_t maxItems = 48)
+    {
+        std::string formatted;
+        const size_t count = (std::min)(ids.size(), maxItems);
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (i) formatted += ',';
+            formatted += std::to_string(ids[i]);
+        }
+        if (ids.size() > count)
+            formatted += std::format(",...(+{})", ids.size() - count);
+        return formatted;
+    }
+
 } // anonymous namespace
 
 // ════════════════════════════════════════════════════════════════
@@ -270,74 +289,156 @@ namespace
 namespace Hooks_NetPacket_AccessToken
 {
 
-    bool HandleSend(const uint8 *pBody, uint32 cbBody)
+    void HandleSend(const uint8 *pBody, uint32 cbBody, std::vector<uint8>& configuredRequestBody)
     {
+        configuredRequestBody.clear();
         CMsgClientPICSProductInfoRequest req;
         if (!req.ParseFromArray(pBody, cbBody))
         {
             LOG_PICS_WARN("Failed to ParseFromArray CMsgClientPICSProductInfoRequest");
-            return false;
+            return;
         }
-        LOG_PICS_DEBUG("CMsgClientPICSProductInfoRequest original body:\n{}", req.DebugString());
 
-        bool needsPatch = false;
+        // Do not turn a normal, potentially 1K+ app metadata refresh into a
+        // full product-info request. That made Steam request the bodies for
+        // every app in the batch and the CM refresh timed out before configured
+        // appinfo was available. Preserve the original request byte-for-byte;
+        // send one separate full-data request containing only our configured
+        // IDs so appinfo can be populated without inflating Steam's batch.
+        std::unordered_set<AppId_t> requested;
+        requested.reserve(static_cast<size_t>(req.apps_size()) + 16);
         for (const auto &app : req.apps())
+            if (app.has_appid()) requested.insert(app.appid());
+
+        const std::vector<AppId_t> configuredIds = LuaConfig::GetAllConfiguredIds();
+        if (configuredIds.empty())
+            return;
+
+        const bool originalContainsFullData =
+            !req.has_meta_data_only() || !req.meta_data_only();
+        CMsgClientPICSProductInfoRequest configuredReq;
+        std::vector<AppId_t> requestedIds;
+        requestedIds.reserve(configuredIds.size());
+        for (AppId_t appId : configuredIds)
         {
-            if (LuaConfig::HasDepot(app.appid()) && LuaConfig::GetAccessToken(app.appid()))
+            if (appId == 0 ||
+                (originalContainsFullData && requested.contains(appId)))
+                continue;
+            auto *app = configuredReq.add_apps();
+            app->set_appid(appId);
+            const uint64_t token = LuaConfig::GetAccessToken(appId);
+            if (token)
             {
-                needsPatch = true;
-                LOG_PICS_DEBUG("CMsgClientPICSProductInfoRequest: found appid {} with access_token, need patching", app.appid());
+                app->set_access_token(token);
+            }
+            requestedIds.push_back(appId);
+        }
+
+        if (requestedIds.empty())
+            return;
+
+        configuredReq.set_meta_data_only(false);
+        if (req.has_sequence_number())
+            configuredReq.set_sequence_number(req.sequence_number());
+        if (req.has_single_response())
+            configuredReq.set_single_response(req.single_response());
+
+        const size_t bodySize = configuredReq.ByteSizeLong();
+        if (bodySize > kMaxBodySize)
+        {
+            LOG_PICS_WARN("Configured PICS request is too large ({} bytes, {} IDs)",
+                          bodySize, requestedIds.size());
+            return;
+        }
+        configuredRequestBody.resize(bodySize);
+        if (!configuredReq.SerializeToArray(configuredRequestBody.data(),
+                                             static_cast<int>(configuredRequestBody.size())))
+        {
+            configuredRequestBody.clear();
+            LOG_PICS_WARN("Failed to encode configured-only PICS request");
+            return;
+        }
+
+        LOG_PICS_INFO("Queued targeted full appinfo request: IDs=[{}] ({} bytes, sequence={}, meta_data_only=false); original {}-app request remains unchanged (meta_data_only={})",
+                      FormatAppIdList(requestedIds), bodySize,
+                      req.has_sequence_number() ? req.sequence_number() : 0,
+                      req.apps_size(), req.has_meta_data_only() ? req.meta_data_only() : false);
+    }
+
+    void HandleRecv(const uint8 *pBody, uint32 cbBody)
+    {
+        CMsgClientPICSProductInfoResponse response;
+        if (!response.ParseFromArray(pBody, static_cast<int>(cbBody)))
+        {
+            LOG_PICS_WARN("Failed to parse PICS product-info response eMsg=8904 (body={} bytes)", cbBody);
+            return;
+        }
+
+        const std::vector<AppId_t> configuredIds = LuaConfig::GetAllConfiguredIds();
+        std::unordered_map<AppId_t, const CMsgClientPICSProductInfoResponse::AppInfo*> appRecords;
+        appRecords.reserve(static_cast<size_t>(response.apps_size()));
+        std::vector<AppId_t> responseAppIds;
+        responseAppIds.reserve(static_cast<size_t>(response.apps_size()));
+        for (const auto& app : response.apps())
+        {
+            if (!app.has_appid())
+                continue;
+            responseAppIds.push_back(app.appid());
+            appRecords.insert_or_assign(app.appid(), &app);
+        }
+
+        std::vector<AppId_t> unknownAppIds;
+        size_t missingTokenCount = 0;
+        size_t emptyBufferCount = 0;
+        for (const auto& app : response.apps())
+        {
+            if (app.has_missing_token() && app.missing_token()) ++missingTokenCount;
+            if (app.has_unknown_app() && app.unknown_app()) unknownAppIds.push_back(app.appid());
+            if (!app.has_buffer() || app.buffer().empty()) ++emptyBufferCount;
+        }
+
+        LOG_PICS_INFO("PICS response eMsg=8904: body={} bytes apps={} packages={} missing_token={} unknown_apps={} empty_buffers={} response_pending={} http_min_interval={} configured_ids={} app_ids=[{}] unknown_app_ids=[{}]",
+                      cbBody, response.apps_size(), response.packages_size(),
+                      missingTokenCount, unknownAppIds.size(), emptyBufferCount,
+                      response.has_response_pending() ? response.response_pending() : 0,
+                      response.has_http_min_interval() ? response.http_min_interval() : 0,
+                      configuredIds.size(), FormatAppIdList(responseAppIds), FormatAppIdList(unknownAppIds));
+
+        size_t logged = 0;
+        for (const AppId_t appId : configuredIds)
+        {
+            if (logged++ >= 48)
+            {
+                LOG_PICS_INFO("PICS response diagnostics: omitted {} additional configured IDs",
+                              configuredIds.size() - 48);
                 break;
             }
-        }
-        if (!needsPatch)
-        {
-            LOG_PICS_TRACE("CMsgClientPICSProductInfoRequest: no apps need token injection, skip");
-            return false;
-        }
 
-        int injected = 0, noToken = 0, notAddAppId = 0;
-        for (auto &app : *req.mutable_apps())
-        {
-            if (LuaConfig::HasDepot(app.appid()))
+            const auto it = appRecords.find(appId);
+            if (it == appRecords.end())
             {
-                uint64_t token = LuaConfig::GetAccessToken(app.appid());
-                if (token)
-                {
-                    LOG_PICS_DEBUG("CMsgClientPICSProductInfoRequest: inject appid={}: {} -> {}", app.appid(),
-                                   app.has_access_token() ? std::to_string(app.access_token()) : "absent",
-                                   token);
-                    app.set_access_token(token);
-                    ++injected;
-                }
-                else
-                {
-                    LOG_PICS_WARN("CMsgClientPICSProductInfoRequest: skip appid={}: in depot, no token configured", app.appid());
-                    ++noToken;
-                }
+                const bool explicitlyUnknown = std::find(unknownAppIds.begin(), unknownAppIds.end(), appId) != unknownAppIds.end();
+                LOG_PICS_WARN("PICS response packet has no app record for configured ID {} (explicitly_unknown={}, response_pending={}); another response packet may still contain it",
+                              appId, explicitlyUnknown,
+                              response.has_response_pending() ? response.response_pending() : 0);
+                continue;
             }
-            else
+
+            const auto& app = *it->second;
+            const size_t bufferSize = app.has_buffer() ? app.buffer().size() : 0;
+            LOG_PICS_INFO("PICS app record {}: missing_token={} unknown_app={} has_buffer={} buffer_bytes={} access_token_present={}",
+                          appId, app.has_missing_token() ? app.missing_token() : false,
+                          app.has_unknown_app() ? app.unknown_app() : false,
+                          app.has_buffer(), bufferSize, app.has_access_token() && app.access_token() != 0);
+            if (!app.has_buffer() || bufferSize == 0 ||
+                (app.has_missing_token() && app.missing_token()) ||
+                (app.has_unknown_app() && app.unknown_app()))
             {
-                ++notAddAppId;
+                LOG_PICS_WARN("PICS appinfo unavailable for configured ID {}: token_missing={} unknown_app={} buffer_bytes={}",
+                              appId, app.has_missing_token() && app.missing_token(),
+                              app.has_unknown_app() && app.unknown_app(), bufferSize);
             }
         }
-        LOG_PICS_DEBUG("CMsgClientPICSProductInfoRequest: injected={} no_token={} not_in_add_appid={} total={}",
-                       injected, noToken, notAddAppId, req.apps_size());
-
-        g_cbSendNewBody = static_cast<uint32>(req.ByteSizeLong());
-        if (g_cbSendNewBody > kMaxBodySize)
-        {
-            LOG_PICS_WARN("CMsgClientPICSProductInfoRequest: encoded size {} exceeds buffer", g_cbSendNewBody);
-            return false;
-        }
-        if (!req.SerializeToArray(g_SendNewBody, kMaxBodySize))
-        {
-            LOG_PICS_WARN("CMsgClientPICSProductInfoRequest: Failed to encode modified request");
-            return false;
-        }
-
-        LOG_PICS_DEBUG("CMsgClientPICSProductInfoRequest: modified body: {}", req.DebugString());
-        return true;
     }
 
 } // namespace Hooks_NetPacket_AccessToken
@@ -1855,6 +1956,7 @@ namespace
     {
         g_NeedReplaceSend = false;
         g_SuppressSend = false;
+        g_ConfiguredPicsBody.clear();
 
         LOG_NETPACKET_DEBUG("Send eMsg {}({}) (cbBody={}, cbHdr={})",
                             MsgName(eMsg), static_cast<uint32>(eMsg), cbBody, cbHdr);
@@ -1873,7 +1975,7 @@ namespace
         }
 
         case k_EMsgClientPICSProductInfoRequest: // 8903
-            g_NeedReplaceSend = Hooks_NetPacket_AccessToken::HandleSend(pBody, cbBody);
+            Hooks_NetPacket_AccessToken::HandleSend(pBody, cbBody, g_ConfiguredPicsBody);
             return;
 
         case k_EMsgClientGamesPlayed:             // 742
@@ -1981,6 +2083,10 @@ namespace
             Hooks_NetPacket_OwnershipTicket::HandleRecv(pBody, cbBody);
             return;
 
+        case k_EMsgClientPICSProductInfoResponse: // 8904
+            Hooks_NetPacket_AccessToken::HandleRecv(pBody, cbBody);
+            return;
+
         default:
             return;
         }
@@ -2006,6 +2112,7 @@ namespace
         const uint8 *pHdr, *pBody;
         uint32 cbHdr, cbBody;
         bool result;
+        g_ConfiguredPicsBody.clear();
         if (UnpackRaw(pubData, cubData, eMsg, pHdr, cbHdr, pBody, cbBody))
         {
             Hooks_NetPacket_TicketFetch::CaptureContext(
@@ -2049,6 +2156,31 @@ namespace
             else
             {
                 result = oBBuildAndAsyncSendFrame(pObject, eWebSocketOpCode, pubData, cubData);
+            }
+
+            // Send the bounded full-data lookup only after the original frame
+            // was accepted. Calling the trampoline avoids re-entering this
+            // hook; ReplaceSendPacket preserves the original protobuf header.
+            if (result && eMsg == k_EMsgClientPICSProductInfoRequest &&
+                !g_ConfiguredPicsBody.empty())
+            {
+                uint32 configuredSize = 0;
+                uint8 *configuredPacket = ReplaceSendPacket(
+                    pubData, cbHdr, pHdr,
+                    g_ConfiguredPicsBody.data(),
+                    static_cast<uint32>(g_ConfiguredPicsBody.size()),
+                    &configuredSize);
+                if (configuredPacket)
+                {
+                    const bool configuredSent = oBBuildAndAsyncSendFrame(
+                        pObject, eWebSocketOpCode, configuredPacket, configuredSize);
+                    LOG_PICS_INFO("Targeted PICS request send {} ({} bytes)",
+                                  configuredSent ? "accepted" : "failed", configuredSize);
+                }
+                else
+                {
+                    LOG_PICS_WARN("Could not assemble targeted PICS request packet");
+                }
             }
         }
         else

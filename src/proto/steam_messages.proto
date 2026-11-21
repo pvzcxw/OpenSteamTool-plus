@@ -112,6 +112,35 @@ message CMsgClientPICSProductInfoRequest {
 }
 
 // ============================================================
+// CMsgClientPICSProductInfoResponse (eMsg 8904)
+// ============================================================
+message CMsgClientPICSProductInfoResponse {
+	message PackageInfo {
+		optional uint32 packageid = 1;
+		optional uint64 access_token = 2;
+		optional bool missing_token = 3;
+		optional bool unknown_package = 4;
+		optional bytes buffer = 5;
+	}
+
+	message AppInfo {
+		optional uint32 appid = 1;
+		optional uint64 access_token = 2;
+		optional bool missing_token = 3;
+		optional bool unknown_app = 4;
+		optional bytes buffer = 5;
+	}
+
+	// The response follows the request's product ordering: packages are field 1,
+	// apps are field 2. Keeping the response schema aligned with the wire tags is
+	// essential because both nested records have the same wire-level field types.
+	repeated .CMsgClientPICSProductInfoResponse.PackageInfo packages = 1;
+	repeated .CMsgClientPICSProductInfoResponse.AppInfo apps = 2;
+	optional uint32 response_pending = 3;
+	optional uint32 http_min_interval = 4;
+}
+
+// ============================================================
 // CFamilyGroupsClient_NotifyRunningApps_Notification  (eMsg 147 target_job_name)
 // ============================================================
 message CFamilyGroupsClient_NotifyRunningApps_Notification {

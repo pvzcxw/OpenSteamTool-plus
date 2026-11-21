@@ -15,6 +15,8 @@ namespace LuaConfig{
     bool IsForcedDenuvo(AppId_t appId);
     bool IsForcedNonDenuvo(AppId_t appId);
     std::vector<AppId_t> GetAllDepotIds();
+    // Returns every ID contributed by addappid(), including app IDs and depots.
+    std::vector<AppId_t> GetAllConfiguredIds();
     std::vector<uint8> GetDecryptionKey(AppId_t appId);
     uint64_t GetAccessToken(AppId_t appId);
     uint64_t GetStatSteamId(AppId_t appId);
