@@ -1,5 +1,3 @@
-> Currently, Steam has many ongoing tasks. This project is currently in the process of being fixed urgently. Please do not use this fork anymore. SORRY
-
 <div align="center">
   <img src="docs/logo-animated.svg" width="180" alt="OpenSteamTool logo">
 
