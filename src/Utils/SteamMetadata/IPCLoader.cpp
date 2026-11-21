@@ -191,6 +191,7 @@ namespace IPCLoader
             return false;
         }
 
+#if TOML_EXCEPTIONS
         toml::table root;
         try
         {
@@ -202,6 +203,16 @@ namespace IPCLoader
             ShowMissingPopup(r.sha256);
             return false;
         }
+#else
+        auto parsed = toml::parse(r.body);
+        if (!parsed)
+        {
+            LOG_WARN("IPCLoader: TOML parse error: {}", parsed.error().description());
+            ShowMissingPopup(r.sha256);
+            return false;
+        }
+        toml::table root = std::move(parsed).table();
+#endif
 
         for (auto &[key, val] : root)
         {

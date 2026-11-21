@@ -5,11 +5,11 @@
 #include "dllmain.h"
 #include "Utils/HookSupport/VehCommon.h"
 #include "OSTPlatform/include/Memory.h"
+#include "Utils/SteamMetadata/PatternLoader.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstring>
 #include <format>
 #include <limits>
 #include <mutex>
@@ -44,11 +44,6 @@ namespace {
 
     constexpr PackageId_t kInjectedPackageId = 0;
     constexpr uint64_t kInjectedPkgAccessToken = 10660652434190618804ull;
-
-    // The observed steamclient64.dll image used for this build had IDA base
-    // 0x138000000. Resolve by RVA under ASLR and validate the exact function
-    // boundary against the loaded image's exception directory (.pdata).
-    constexpr uintptr_t kDepotLicenseGateRva = 0x9FDA30ull;
 
     template <typename T>
     std::string FormatIdVector(const CUtlVector<T>& vec, size_t maxItems = 48)
@@ -105,6 +100,12 @@ namespace {
     {
 #if defined(_M_X64)
         const auto module = client_hModule.load(std::memory_order_acquire);
+        if (!module)
+        {
+            LOG_PACKAGE_WARN("DepotLicenseGate: steamclient module is not loaded");
+            return nullptr;
+        }
+
         const auto image = OSTPlatform::Memory::GetModuleImage(module);
         if (!image || !image->base)
             return nullptr;
@@ -127,24 +128,29 @@ namespace {
             return nullptr;
         }
 
-        // IDA's input uses preferred image base 0x138000000. Runtime ASLR
-        // changes the module base, so resolve the function by its RVA and
-        // validate it against this loaded image's executable extent.
-        const uintptr_t rva = kDepotLicenseGateRva;
-        if (rva >= nt->OptionalHeader.SizeOfImage ||
-            sizeof(uint8_t) > nt->OptionalHeader.SizeOfImage - rva)
+        // Resolve using the SHA-specific pattern TOML loaded for this DLL.
+        // steam-monitor emits both the RVA and a unique signature; the loader
+        // selects the record matching this steamclient build's SHA-256.
+        auto* candidate = static_cast<uint8_t*>(
+            PatternLoader::FindPattern(module, "DepotLicenseGate"));
+        if (!candidate)
         {
-            LOG_PACKAGE_WARN("DepotLicenseGate RVA 0x{:X} is outside the client image (PE size=0x{:X})",
-                             rva, nt->OptionalHeader.SizeOfImage);
+            LOG_PACKAGE_WARN("DepotLicenseGate has no usable entry in the steamclient pattern TOML");
             return nullptr;
         }
 
-        auto* candidate = image->base + rva;
         const uintptr_t base = reinterpret_cast<uintptr_t>(image->base);
-        const uintptr_t end = base + nt->OptionalHeader.SizeOfImage;
         const uintptr_t address = reinterpret_cast<uintptr_t>(candidate);
-        if (end < base || address < base || address >= end)
+        const uintptr_t imageSize = nt->OptionalHeader.SizeOfImage;
+        if (imageSize > (std::numeric_limits<uintptr_t>::max)() - base ||
+            address < base || address - base >= imageSize)
+        {
+            LOG_PACKAGE_WARN("DepotLicenseGate TOML result 0x{:X} is outside the steamclient image",
+                             address);
             return nullptr;
+        }
+        const uintptr_t rva = address - base;
+        const uintptr_t end = base + imageSize;
 
         DWORD64 unwindImageBase = 0;
         PRUNTIME_FUNCTION runtimeFunction = RtlLookupFunctionEntry(
@@ -156,30 +162,21 @@ namespace {
             return nullptr;
         }
 
-        const uintptr_t functionBegin = base + runtimeFunction->BeginAddress;
-        const uintptr_t functionEnd = base + runtimeFunction->EndAddress;
-        constexpr uintptr_t kExpectedFunctionSize = 0x11Full;
-        if (functionBegin < base || functionEnd <= functionBegin || functionEnd > end ||
-            address != functionBegin || functionEnd - functionBegin != kExpectedFunctionSize)
+        if (runtimeFunction->BeginAddress >= imageSize ||
+            runtimeFunction->EndAddress <= runtimeFunction->BeginAddress ||
+            runtimeFunction->EndAddress > imageSize)
         {
-            LOG_PACKAGE_WARN("DepotLicenseGate candidate 0x{:X} failed .pdata boundary validation [0x{:X},0x{:X})",
-                             address, functionBegin, functionEnd);
+            LOG_PACKAGE_WARN("DepotLicenseGate .pdata extent is outside the steamclient image");
             return nullptr;
         }
 
-        // Bytes read from this build's IDB at sub_1389FDA30. The first
-        // instruction has a redundant REX prefix; require the exact leading
-        // sequence as a final guard against landing on an E8 displacement.
-        constexpr uint8_t kExpectedPrologue[] = {
-            0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41,
-            0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8B, 0xEC,
-            0x48, 0x83, 0xEC, 0x68
-        };
-        if (sizeof(kExpectedPrologue) > nt->OptionalHeader.SizeOfImage ||
-            rva > nt->OptionalHeader.SizeOfImage - sizeof(kExpectedPrologue) ||
-            std::memcmp(candidate, kExpectedPrologue, sizeof(kExpectedPrologue)) != 0)
+        const uintptr_t functionBegin = base + runtimeFunction->BeginAddress;
+        const uintptr_t functionEnd = base + runtimeFunction->EndAddress;
+        if (functionBegin < base || functionEnd <= functionBegin || functionEnd > end ||
+            address != functionBegin)
         {
-            LOG_PACKAGE_WARN("DepotLicenseGate RVA 0x{:X} failed its function-prologue check", rva);
+            LOG_PACKAGE_WARN("DepotLicenseGate TOML candidate 0x{:X} is not a .pdata function entry [0x{:X},0x{:X})",
+                             address, functionBegin, functionEnd);
             return nullptr;
         }
 
@@ -629,7 +626,7 @@ namespace Hooks_Package {
         }
         else
         {
-            LOG_PACKAGE_WARN("DepotLicenseGate not installed: RVA/.pdata validation failed");
+            LOG_PACKAGE_WARN("DepotLicenseGate not installed: TOML/.pdata validation failed");
         }
         HOOK_END();
     }

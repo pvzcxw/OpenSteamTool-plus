@@ -20,6 +20,8 @@ static_assert(Fnv1aHash("BBuildAndAsyncSendFrame") == 0x82428E37u,
               "FNV-1a mismatch for BBuildAndAsyncSendFrame");
 static_assert(Fnv1aHash("BuildDepotDependency") == 0xC37F2D8Eu,
               "FNV-1a mismatch for BuildDepotDependency");
+static_assert(Fnv1aHash("DepotLicenseGate") == 0xDE81583Bu,
+              "FNV-1a mismatch for DepotLicenseGate");
 
 namespace {
 
