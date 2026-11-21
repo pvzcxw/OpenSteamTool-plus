@@ -168,7 +168,7 @@ namespace IPCLoader
                 "  2. Drop a matching TOML at:\n"
                 "       <Steam>\\opensteamtool\\ipc\\steamclient\\" + sha256 + ".toml\n"
                 "  3. Check upstream:\n"
-                "     https://github.com/huanyuejue/steam-monitor/tree/main/ipc/steamclient");
+                "     https://github.com/pvzcxw/steam_monitor/tree/main/ipc/steamclient");
         }
 
     } // namespace
